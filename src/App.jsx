@@ -253,8 +253,14 @@ export default function App() {
     setLines(ls => ls.map(l => {
       if (l.lid !== id) return l;
       if (k === "splitEnabled") return { ...l, splitEnabled: !!v };
-      if (k === "splitPanelRatio") return { ...l, splitPanelRatio: Math.min(100, Math.max(0, clampInt(v, 0))) };
-      if (k === "splitOutsideFactor") return { ...l, splitOutsideFactor: Math.max(0, Number(v) || 0) };
+      if (k === "splitPanelRatio") {
+        const n = v === "" ? 0 : Number(v);
+        return { ...l, splitPanelRatio: Number.isFinite(n) ? Math.min(100, Math.max(0, Math.round(n))) : 0 };
+      }
+      if (k === "splitOutsideFactor") {
+        const n = v === "" ? 0 : Number(v);
+        return { ...l, splitOutsideFactor: Number.isFinite(n) ? Math.max(0, n) : 0 };
+      }
       const val = v === "" ? null : Math.max(0, Number(v));
       if ((ci?.hutWeeks != null) && k === "mulO") return { ...l, [k]: null };
       return { ...l, [k]: Number.isFinite(val) ? val : null };
@@ -627,15 +633,32 @@ export default function App() {
                                   拆分报价
                                 </label>
                                 {sourceLine?.splitEnabled && (
-                                  <>
-                                    <input type="number" min={0} max={100} value={sourceLine?.splitPanelRatio ?? 50} onChange={e => updLine(r.lid, "splitPanelRatio", e.target.value)} style={{ ...S.mini, width:52, textAlign:"center" }} title="Panel报价所占比例%" />
-                                    <div style={{ fontSize:10, color:"#666" }}>Panel报价所占比例 / 常规报价倍率</div>
-                                    <div style={{ display:"flex", gap:4, alignItems:"center" }}>
-                                      <span style={{ fontSize:10, color:"#666" }}>Panel {sourceLine?.splitPanelRatio ?? 50}% / 常规 {100 - (sourceLine?.splitPanelRatio ?? 50)}%</span>
-                                      <input type="range" min={0} max={100} value={sourceLine?.splitPanelRatio ?? 50} onChange={e => updLine(r.lid, "splitPanelRatio", e.target.value)} style={{ width:72 }} title="Panel报价所占比例%" />
+                                  <div style={{ display:"flex", flexDirection:"column", gap:6, alignItems:"center", marginTop:4 }}>
+                                    <div style={{ fontSize:10, color:"#666" }}>Panel报价所占比例 %</div>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      max={100}
+                                      step="1"
+                                      value={sourceLine?.splitPanelRatio ?? 50}
+                                      onChange={e => updLine(r.lid, "splitPanelRatio", e.target.value)}
+                                      style={{ ...S.mini, width:64, textAlign:"center" }}
+                                      title="Panel报价所占比例%"
+                                    />
+                                    <div style={{ fontSize:10, color:"#666" }}>常规报价倍率</div>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      step="0.1"
+                                      value={sourceLine?.splitOutsideFactor ?? 1.2}
+                                      onChange={e => updLine(r.lid, "splitOutsideFactor", e.target.value)}
+                                      style={{ ...S.mini, width:64, textAlign:"center" }}
+                                      title="常规报价倍率"
+                                    />
+                                    <div style={{ fontSize:10, color:"#666", lineHeight:1.4 }}>
+                                      Panel {(sourceLine?.splitPanelRatio ?? 50)}% / 常规 {100 - (sourceLine?.splitPanelRatio ?? 50)}%
                                     </div>
-                                    <input type="number" min={0} step="0.1" value={sourceLine?.splitOutsideFactor ?? 1.2} onChange={e => updLine(r.lid, "splitOutsideFactor", e.target.value)} style={{ ...S.mini, width:52, textAlign:"center" }} title="常规报价倍率" />
-                                  </>
+                                  </div>
                                 )}
                               </div>
                             )}

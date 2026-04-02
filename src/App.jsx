@@ -407,6 +407,21 @@ export default function App() {
   return (
     <div style={{ fontFamily:"Georgia,serif", background:"#f4f1ec", minHeight:"100vh", color:"#1a1a1a" }}>
       <style>{css}</style>
+
+      <div style={{ background:"#2c2825", padding:"18px 28px", display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, flexWrap:"wrap" }}>
+        <div>
+          <div style={{ fontSize:10, letterSpacing:"0.12em", textTransform:"uppercase", color:"#9a8e80", marginBottom:4 }}>HOW-TO 灏图品测 · 智能报价系统</div>
+          <input
+            value={p.title}
+            onChange={e => sp("title", e.target.value)}
+            style={{ background:"transparent", border:"none", borderBottom:"1px solid #5a504a", color:"#f5f2ed", fontSize:20, fontWeight:700, fontFamily:"inherit", outline:"none", width:360, padding:"2px 0" }}
+          />
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+          <div style={{ textAlign:"right" }}>
+            <div style={{ fontSize:10, color:"#9a8e80", letterSpacing:"0.08em", textTransform:"uppercase" }}>含税总额</div>
+            <div style={{ fontSize:26, fontWeight:700, fontFamily:"monospace", color:"#e8c99a" }}>{fmtRMB(gross)}</div>
+          </div>
           <button className="export-btn" onClick={exportXLSX}>⬇ 导出 Excel</button>
         </div>
       </div>

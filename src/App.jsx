@@ -626,14 +626,15 @@ export default function App() {
                             </div>
                           </td>
                           <td style={{ ...S.td, textAlign:"center", fontSize:11 }}>
-                            {r.splitTag || (
+                            {(!r.splitTag || r.splitTag === "Panel报价") ? (
                               <div style={{ display:"flex", flexDirection:"column", gap:4, alignItems:"center" }}>
                                 <label style={{ fontSize:10, color:"#666" }}>
                                   <input type="checkbox" checked={!!sourceLine?.splitEnabled} onChange={e => updLine(r.lid, "splitEnabled", e.target.checked)} style={{ marginRight:4 }} />
                                   拆分报价
                                 </label>
-                                {sourceLine?.splitEnabled && (
+                                {sourceLine?.splitEnabled ? (
                                   <div style={{ display:"flex", flexDirection:"column", gap:6, alignItems:"center", marginTop:4 }}>
+                                    {r.splitTag && <div style={{ fontSize:10, color:"#2f6b45", fontWeight:700 }}>当前为 {r.splitTag}</div>}
                                     <div style={{ fontSize:10, color:"#666" }}>Panel报价所占比例 %</div>
                                     <input
                                       type="number"
@@ -659,8 +660,10 @@ export default function App() {
                                       Panel {(sourceLine?.splitPanelRatio ?? 50)}% / 常规 {100 - (sourceLine?.splitPanelRatio ?? 50)}%
                                     </div>
                                   </div>
-                                )}
+                                ) : null}
                               </div>
+                            ) : (
+                              r.splitTag
                             )}
                           </td>
                           <td style={{ ...S.td, fontSize:10, color:"#bbb", lineHeight:1.4 }}>{CALC_LABELS[r.ci.calcType]}{r.ci.isExtraProduct ? "（按套装件数计）" : ""}</td>

@@ -78,8 +78,7 @@ const INIT_CATALOG = [
   { id:"d2",  cat:"交付与通用",   name:"完整报告",                           unitPrice:4000, calcType:"prod",notes:"", locked:true },
   { id:"d3",  cat:"交付与通用",   name:"项目管理费",                         unitPrice:1000, calcType:"prod",notes:"含样本小组建立/维护", locked:true },
   { id:"d4",  cat:"交付与通用",   name:"盲包",                              unitPrice:20,   calcType:"ppp", notes:"需灏图提供盲包时", locked:true },
-  { id:"d5",  cat:"交付与通用",   name:"消费者招募费",                       unitPrice:80,   calcType:"pp",  notes:"可在报价明细中启用拆分", locked:true },
-];
+  ];
 
 const CALC_LABELS = { ppp:"单产品N × 整体产品数", pp:"× 总样本量", prod:"× 整体产品数", ses:"× 场次数", fix:"固定金额" };
 const CATS = ["交付与通用","定量·HUT留置","定量·CLT定点","定性研究","高阶技术"];
@@ -208,8 +207,8 @@ export default function App() {
         const outsideQty = Math.round(qty * outsideRatio / 100);
         const insideQty = qty - outsideQty;
         const outsideFactor = Math.max(0, Number(l.splitOutsideFactor || 1.2));
-        if (insideQty > 0) rows.push({ ...l, ci, qty: insideQty, price, mul, total: insideQty * price * mul, splitTag:"常规", splitNote:`常规 ${insideQty}` });
-        if (outsideQty > 0) rows.push({ ...l, ci, qty: outsideQty, price: +(price * outsideFactor).toFixed(2), mul, total: outsideQty * +(price * outsideFactor).toFixed(2) * mul, splitTag:"Panel外", splitNote:`Panel外 ${outsideQty}（${outsideFactor}倍）` });
+        if (insideQty > 0) rows.push({ ...l, ci, qty: insideQty, price, mul, total: insideQty * price * mul, splitTag:"Panel报价", splitNote:`Panel报价 ${insideQty}` });
+        if (outsideQty > 0) rows.push({ ...l, ci, qty: outsideQty, price: +(price * outsideFactor).toFixed(2), mul, total: outsideQty * +(price * outsideFactor).toFixed(2) * mul, splitTag:"常规报价", splitNote:`常规报价 ${outsideQty}（${outsideFactor}倍）` });
       } else {
         rows.push({ ...l, ci, qty, price, mul, total: qty * price * mul, splitTag:"", splitNote:"" });
       }
@@ -617,7 +616,7 @@ export default function App() {
                               {r.ci.isExtraWeek && <span style={badgeAmber}>+{sourceLine?.mulO ?? 1}周</span>}
                               {r.ci.isExtraQuestionnaire && <span style={badgeAmber}>+{sourceLine?.mulO ?? 1}份问卷</span>}
                               {r.ci.isExtraProduct && <span style={badgeAmber}>套装内 +{sourceLine?.mulO ?? 1}件</span>}
-                              {sourceLine?.splitEnabled && <span style={badgeGreen}>已拆分</span>}
+                              {sourceLine?.splitEnabled && <span style={badgeGreen}>已拆分报价</span>}
                             </div>
                           </td>
                           <td style={{ ...S.td, textAlign:"center", fontSize:11 }}>
@@ -625,12 +624,17 @@ export default function App() {
                               <div style={{ display:"flex", flexDirection:"column", gap:4, alignItems:"center" }}>
                                 <label style={{ fontSize:10, color:"#666" }}>
                                   <input type="checkbox" checked={!!sourceLine?.splitEnabled} onChange={e => updLine(r.lid, "splitEnabled", e.target.checked)} style={{ marginRight:4 }} />
-                                  拆分
+                                  拆分报价
                                 </label>
                                 {sourceLine?.splitEnabled && (
                                   <>
-                                    <input type="number" min={0} max={100} value={sourceLine?.splitOutsideRatio ?? 50} onChange={e => updLine(r.lid, "splitOutsideRatio", e.target.value)} style={{ ...S.mini, width:52, textAlign:"center" }} title="Panel外占比%" />
-                                    <input type="number" min={0} step="0.1" value={sourceLine?.splitOutsideFactor ?? 1.2} onChange={e => updLine(r.lid, "splitOutsideFactor", e.target.value)} style={{ ...S.mini, width:52, textAlign:"center" }} title="Panel外倍率" />
+                                    <input type="number" min={0} max={100} value={sourceLine?.splitOutsideRatio ?? 50} onChange={e => updLine(r.lid, "splitOutsideRatio", e.target.value)} style={{ ...S.mini, width:52, textAlign:"center" }} title="常规报价占比%" />
+                                    <div style={{ fontSize:10, color:"#666" }}>常规报价占比 / 倍率</div>
+                                    <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+                                      <span style={{ fontSize:10, color:"#666" }}>{100 - (sourceLine?.splitOutsideRatio ?? 50)}%</span>
+                                      <input type="range" min={0} max={100} value={sourceLine?.splitOutsideRatio ?? 50} onChange={e => updLine(r.lid, "splitOutsideRatio", e.target.value)} style={{ width:72 }} title="常规报价占比%" />
+                                    </div>
+                                    <input type="number" min={0} step="0.1" value={sourceLine?.splitOutsideFactor ?? 1.2} onChange={e => updLine(r.lid, "splitOutsideFactor", e.target.value)} style={{ ...S.mini, width:52, textAlign:"center" }} title="常规报价倍率" />
                                   </>
                                 )}
                               </div>
@@ -678,7 +682,7 @@ export default function App() {
               <div style={{ background:"#fffbf5", border:"1px solid #ece3d0", borderRadius:8, padding:"11px 15px", fontSize:11, color:"#9a8e80", lineHeight:2.1 }}>
                 <strong>整体产品数影响总样本量：</strong>{p.perProductN} × {design.overallProducts} = <strong>{clampInt(p.perProductN, 1) * design.overallProducts}</strong>
                 &emsp;|&emsp;<strong>q8 套装件数计价：</strong>{p.perProductN} × {design.overallProducts} × {Math.max(0, design.setItemsPerProduct - 1)}
-                &emsp;|&emsp;报价明细支持对任意目录项启用拆分：可设置 Panel外占比与倍率
+                &emsp;|&emsp;报价明细支持对任意目录项启用拆分：原目录价显示为 Panel报价，拆分后的加价部分显示为常规报价，可调整常规报价占比与倍率
                 &emsp;|&emsp;基础项倍数已锁定，避免金额与研究设计脱钩
               </div>
             </div>

@@ -150,6 +150,7 @@ export default function App() {
   }, [selectedBase, p.designWeeks, p.designQuestionnaires, p.designProducts, p.setItemsPerProduct]);
 
   const totalN = p.totalNAuto ? clampInt(p.perProductN, 1) * design.overallProducts : clampInt(p.totalNManual, 1);
+  const totalNDisplay = clampInt(p.perProductN, 1) * design.overallProducts;
   const recruitDaysAuto = calcRecruitDays(totalN, p.difficulty);
   const recruitDays = cleanNum(p.recruitDaysManual) ?? recruitDaysAuto;
   const screenDays = cleanNum(p.screenDaysManual) ?? 3;
@@ -285,53 +286,104 @@ export default function App() {
   }, [p.startDate, screenDays, recruitDays, mainQDays, leaveDays, toplineDays, reportDays]);
 
   const ddlAnalysis = useMemo(() => {
-    const fixedLeave = leaveDays;
-    const adjustableAuto = screenDays + recruitDays + mainQDays + toplineDays + reportDays;
     const targetTop = p.targetToplineEnd ? skipWE(new Date(p.targetToplineEnd)) : null;
     const targetRep = p.targetReportEnd ? skipWE(new Date(p.targetReportEnd)) : null;
-    let selectedTarget = null;
-    let chainEnd = null;
-    let modeLabel = "";
-    if (p.ddlMode === "topline" && targetTop) {
-      selectedTarget = targetTop;
-      chainEnd = backDays(targetTop, reportDays);
-      modeLabel = "按 Topline 截止倒推";
-    } else if (p.ddlMode === "report" && targetRep) {
-      selectedTarget = targetRep;
-      chainEnd = targetRep;
-      modeLabel = "按 Report 截止倒推";
-    } else {
-      return { active:false, message:"未启用倒推", requiredReduction:0, adjustableAuto, selectedTarget:null, modeLabel:"", reverse:null };
+
+    if (!targetTop && !targetRep) {
+      return {
+        active:false,
+        messages:["未启用倒推"],
+        requiredReductionTopline:0,
+        requiredReductionReport:0,
+        daysAheadTopline:0,
+        daysAheadReport:0,
+        targetTop:null,
+        targetRep:null,
+        reverse:null,
+        reverseBasis:""
+      };
     }
 
-    const autoEnd = p.ddlMode === "topline" ? autoProjection.tEnd : autoProjection.rpEnd;
-    const gapDays = Math.max(0, Math.ceil((autoEnd - selectedTarget) / 86400000));
+    const autoTop = autoProjection.tEnd;
+    const autoRep = autoProjection.rpEnd;
+    const diffTop = targetTop ? Math.ceil((autoTop - targetTop) / 86400000) : null;
+    const diffRep = targetRep ? Math.ceil((autoRep - targetRep) / 86400000) : null;
 
-    const reverse = (() => {
-      const reportEnd = p.ddlMode === "report" ? selectedTarget : skipWE(addDays(chainEnd, reportDays));
+    const requiredReductionTopline = targetTop ? Math.max(0, diffTop) : 0;
+    const requiredReductionReport = targetRep ? Math.max(0, diffRep) : 0;
+    const daysAheadTopline = targetTop ? Math.max(0, -diffTop) : 0;
+    const daysAheadReport = targetRep ? Math.max(0, -diffRep) : 0;
+
+    const messages = [];
+    if (targetTop) {
+      if (requiredReductionTopline > 0) {
+        messages.push(`按 Topline 截止时间倒推：当前自动排期还需从可调整环节合计缩减至少 ${requiredReductionTopline} 天。`);
+      } else if (daysAheadTopline > 0) {
+        messages.push(`按 Topline 截止时间倒推：当前排期可提前 ${daysAheadTopline} 天交付。`);
+      } else {
+        messages.push("按 Topline 截止时间倒推：当前排期刚好满足。");
+      }
+    }
+    if (targetRep) {
+      if (requiredReductionReport > 0) {
+        messages.push(`按 Report 截止时间倒推：当前自动排期还需从可调整环节合计缩减至少 ${requiredReductionReport} 天。`);
+      } else if (daysAheadReport > 0) {
+        messages.push(`按 Report 截止时间倒推：当前排期可提前 ${daysAheadReport} 天交付。`);
+      } else {
+        messages.push("按 Report 截止时间倒推：当前排期刚好满足。");
+      }
+    }
+
+    let reverse = null;
+    let reverseBasis = "";
+    if (targetRep) {
+      reverseBasis = "按 Report 截止时间倒推";
+      const reportEnd = targetRep;
       const reportStart = skipBack(reportEnd, reportDays);
-      const toplineEnd = p.ddlMode === "topline" ? selectedTarget : reportStart;
+      const toplineEnd = reportStart;
       const toplineStart = skipBack(toplineEnd, toplineDays);
       const leaveEnd = toplineStart;
-      const recruitEnd = skipBack(leaveEnd, fixedLeave);
+      const recruitEnd = skipBack(leaveEnd, leaveDays);
       const mainQEnd = leaveEnd;
       const mainQStart = skipBack(mainQEnd, mainQDays);
       const recruitStart = skipBack(recruitEnd, recruitDays);
       const screenEnd = recruitStart;
       const screenStart = skipBack(screenEnd, screenDays);
       const attr = skipWE(addDays(recruitEnd, -2));
-      return { screenStart, screenEnd, recruitStart, recruitEnd, mainQStart, mainQEnd, leaveEnd, toplineStart, toplineEnd, reportStart, reportEnd, attr };
-    })();
+      reverse = { screenStart, screenEnd, recruitStart, recruitEnd, mainQStart, mainQEnd, leaveEnd, toplineStart, toplineEnd, reportStart, reportEnd, attr };
+    } else if (targetTop) {
+      reverseBasis = "按 Topline 截止时间倒推";
+      const toplineEnd = targetTop;
+      const toplineStart = skipBack(toplineEnd, toplineDays);
+      const leaveEnd = toplineStart;
+      const recruitEnd = skipBack(leaveEnd, leaveDays);
+      const mainQEnd = leaveEnd;
+      const mainQStart = skipBack(mainQEnd, mainQDays);
+      const recruitStart = skipBack(recruitEnd, recruitDays);
+      const screenEnd = recruitStart;
+      const screenStart = skipBack(screenEnd, screenDays);
+      const attr = skipWE(addDays(recruitEnd, -2));
+      const reportStart = toplineEnd;
+      const reportEnd = skipWE(addDays(reportStart, reportDays));
+      reverse = { screenStart, screenEnd, recruitStart, recruitEnd, mainQStart, mainQEnd, leaveEnd, toplineStart, toplineEnd, reportStart, reportEnd, attr };
+    }
 
-    const message = gapDays > 0
-      ? `当前自动排期无法满足 ${modeLabel}。若保持“派发和留置”不变，需从可调整环节（甄别问卷 / 招募 / 主问卷 / Topline / Report）合计缩减至少 ${gapDays} 天。`
-      : `当前手动天数设置已可满足 ${modeLabel}。如需进一步加急，可继续缩短可调整环节。`;
-
-    return { active:true, message, requiredReduction:gapDays, adjustableAuto, selectedTarget, modeLabel, reverse };
-  }, [p.ddlMode, p.targetToplineEnd, p.targetReportEnd, autoProjection, screenDays, recruitDays, mainQDays, leaveDays, toplineDays, reportDays]);
+    return {
+      active:true,
+      messages,
+      requiredReductionTopline,
+      requiredReductionReport,
+      daysAheadTopline,
+      daysAheadReport,
+      targetTop,
+      targetRep,
+      reverse,
+      reverseBasis
+    };
+  }, [p.targetToplineEnd, p.targetReportEnd, autoProjection, screenDays, recruitDays, mainQDays, leaveDays, toplineDays, reportDays]);
 
   const timeline = useMemo(() => {
-    const useReverse = ddlAnalysis.active && ddlAnalysis.reverse;
+    const useReverse = !!ddlAnalysis.reverse;
     const a = autoProjection;
     const r = ddlAnalysis.reverse;
     const build = useReverse ? {
@@ -448,11 +500,32 @@ export default function App() {
               </select>
             </F>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+              <F label="单产品样本量">
+                <input className="inp" type="number" min={1} value={p.perProductN} onChange={e => sp("perProductN", clampInt(e.target.value, 1))} />
+              </F>
               <F label="整体测试产品数">
                 <input className="inp" type="number" min={1} value={p.designProducts} onChange={e => sp("designProducts", clampInt(e.target.value, 1))} />
               </F>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+              <F label="总样本量模式">
+                <select className="inp" value={p.totalNAuto ? "auto" : "manual"} onChange={e => sp("totalNAuto", e.target.value === "auto")}>
+                  <option value="auto">自动计算</option>
+                  <option value="manual">手动输入</option>
+                </select>
+              </F>
+              <F label={p.totalNAuto ? "自动总样本量" : "手动总样本量"}>
+                <input className="inp" type="number" min={1} value={p.totalNAuto ? totalNDisplay : p.totalNManual} disabled={p.totalNAuto} onChange={e => sp("totalNManual", clampInt(e.target.value, 1))} />
+              </F>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
               <F label="单产品内套装件数">
                 <input className="inp" type="number" min={1} value={p.setItemsPerProduct} onChange={e => sp("setItemsPerProduct", clampInt(e.target.value, 1))} />
+              </F>
+              <F label="联动结果">
+                <div className="inp" style={{ background:"#f7f4ef", display:"flex", alignItems:"center", minHeight:36 }}>
+                  {clampInt(p.perProductN, 1)} × {design.overallProducts} = {totalNDisplay}
+                </div>
               </F>
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
@@ -470,7 +543,9 @@ export default function App() {
             <div style={{ background:"#f0ebe3", borderRadius:6, padding:"12px", marginTop:14, fontSize:12, lineHeight:2 }}>
               {[
                 ["当前基础项", design.baseName],
+                ["单产品样本量", `${clampInt(p.perProductN, 1)} 人`],
                 ["整体测试产品数", `${design.overallProducts} 款`],
+                ["总样本量", `${totalN} 人`],
                 ["单产品内套装件数", `${design.setItemsPerProduct} 件`],
                 ["留置周数", `${design.hutWeeks} 周`],
                 ["问卷份数", `${design.hutQuestionnaires} 份`],
@@ -718,36 +793,29 @@ export default function App() {
                 </div>
                 <div style={{ background:"#fff7ed", border:"1px solid #f1d4a9", borderRadius:6, padding:"12px" }}>
                   <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a5a0a", marginBottom:10, fontWeight:700 }}>截止时间倒推（可选）</div>
-                  <F label="倒推模式">
-                    <select className="inp" value={p.ddlMode} onChange={e => sp("ddlMode", e.target.value)}>
-                      <option value="none">不启用倒推</option>
-                      <option value="topline">按 Topline 结束时间倒推</option>
-                      <option value="report">按 Report 结束时间倒推</option>
-                    </select>
-                  </F>
-                  {p.ddlMode === "topline" && (
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
                     <F label="Topline 结束日期">
                       <input className="inp" type="date" value={p.targetToplineEnd} onChange={e => sp("targetToplineEnd", e.target.value)} />
                     </F>
-                  )}
-                  {p.ddlMode === "report" && (
                     <F label="Report 结束日期">
                       <input className="inp" type="date" value={p.targetReportEnd} onChange={e => sp("targetReportEnd", e.target.value)} />
                     </F>
-                  )}
-                  <div style={{ marginTop:6, padding:"10px 12px", background:"rgba(255,255,255,0.55)", borderRadius:6, fontSize:11, color:"#8a5a0a", lineHeight:1.9 }}>{ddlAnalysis.message}</div>
+                  </div>
+                  <div style={{ marginTop:6, padding:"10px 12px", background:"rgba(255,255,255,0.55)", borderRadius:6, fontSize:11, color:"#8a5a0a", lineHeight:1.9 }}>
+                    {ddlAnalysis.messages.map((msg, i) => <div key={i}>{msg}</div>)}
+                  </div>
                   <div style={{ marginTop:12, padding:"10px 12px", background:"#fff", borderRadius:6, border:"1px solid #f3e4ca", fontSize:11, lineHeight:1.9, color:"#7a6e5f" }}>
                     <div><strong>当前自动招募：</strong>{recruitDays} 天 / {recruitWeeksStr(totalN, p.difficulty)}</div>
                     <div><strong>固定留置：</strong>{leaveDays} 天（{design.hutWeeks}周×7 + 快递{p.courierDays}天）</div>
                     <div><strong>Topline：</strong>{toplineDays} 天　<strong>Report：</strong>{reportDays} 天</div>
-                    <div><strong>总样本量：</strong>{p.perProductN} × {design.overallProducts} = {clampInt(p.perProductN, 1) * design.overallProducts}</div>
+                    <div><strong>总样本量：</strong>{p.totalNAuto ? `${clampInt(p.perProductN, 1)} × ${design.overallProducts} = ${totalNDisplay}` : `手动输入 ${totalN}`}</div>
                   </div>
                 </div>
               </div>
               {ddlAnalysis.active && (
                 <div style={{ background:"#fff7ed", border:"1px solid #f1d4a9", borderRadius:6, padding:"12px 14px", color:"#8a5a0a", fontSize:12, lineHeight:1.9, marginBottom:12 }}>
-                  <div style={{ fontWeight:700, marginBottom:4 }}>{ddlAnalysis.modeLabel}</div>
-                  <div>{ddlAnalysis.message}</div>
+                  <div style={{ fontWeight:700, marginBottom:6 }}>DDL 结果提示</div>
+                  {ddlAnalysis.messages.map((msg, i) => <div key={i}>{msg}</div>)}
                 </div>
               )}
               <table style={S.table}>
@@ -777,7 +845,7 @@ export default function App() {
                 <strong style={{ color:"#7a6e5f" }}>Topline：</strong>7天基础；第3/5/7...款各 +3.5 天，不再因额外问卷增加时长。当前自动：{toplineDaysAuto} 天
                 &emsp;<strong style={{ color:"#7a6e5f" }}>Report：</strong>7天基础；每 +1 款增 3.5 天。当前自动：{reportDaysAuto} 天<br/>
                 <strong style={{ color:"#7a6e5f" }}>留置：</strong>{design.hutWeeks}周 × 7 + 快递 {p.courierDays} 天 = {leaveDays} 天（固定不可压缩）
-                &emsp;<strong style={{ color:"#7a6e5f" }}>当前设计：</strong>{design.overallProducts}款 · 套装{design.setItemsPerProduct}件 · {design.hutWeeks}周 · {design.hutQuestionnaires}份问卷
+                &emsp;<strong style={{ color:"#7a6e5f" }}>当前设计：</strong>{clampInt(p.perProductN, 1)}人/单产品 · {design.overallProducts}款 · 套装{design.setItemsPerProduct}件 · {design.hutWeeks}周 · {design.hutQuestionnaires}份问卷
               </div>
             </div>
           )}

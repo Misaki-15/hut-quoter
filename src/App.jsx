@@ -104,6 +104,15 @@ function lineFromCatalog(ci, more = {}) {
   };
 }
 
+const PINNED_LINE_RANK = { d3: -100, d1: 1000000, d2: 1000001 };
+function sortLinesForDisplay(arr) {
+  return [...arr].sort((a, b) => {
+    const ra = Object.prototype.hasOwnProperty.call(PINNED_LINE_RANK, a.lid) ? PINNED_LINE_RANK[a.lid] : 0;
+    const rb = Object.prototype.hasOwnProperty.call(PINNED_LINE_RANK, b.lid) ? PINNED_LINE_RANK[b.lid] : 0;
+    return ra - rb;
+  });
+}
+
 export default function App() {
   const [tab, setTab] = useState("quote");
   const [catalog, setCatalog] = useState(INIT_CATALOG);
@@ -227,18 +236,40 @@ export default function App() {
   const gross = +(sub * (1 + clampInt(p.vatRate, 0) / 100)).toFixed(2);
 
   const syncHUTLines = () => {
-    const keep = lines.filter(l => {
-      const ci = getCi(l.lid);
-      return ci && ci.cat !== "定量·HUT留置";
-    });
-    const next = [...keep, lineFromCatalog(getCi(design.baseId), { mulO: null })];
+    const existingMap = new Map(lines.map(l => [l.lid, l]));
+    const next = [];
+
+    const pushUnique = (id, more = {}) => {
+      const ci = getCi(id);
+      if (!ci) return;
+      if (next.find(x => x.lid === id)) return;
+      const existing = existingMap.get(id);
+      next.push(existing ? { ...existing, ...more } : lineFromCatalog(ci, more));
+    };
+
+    pushUnique("d3");
+    pushUnique(design.baseId, { mulO: null });
+
     const weekDiff = Math.max(0, design.hutWeeks - design.baseWeeks);
     const questDiff = Math.max(0, design.hutQuestionnaires - design.baseQuestionnaires);
     const setDiff = Math.max(0, design.setItemsPerProduct - 1);
-    if (weekDiff > 0) next.push(lineFromCatalog(getCi("q6"), { mulO: weekDiff }));
-    if (questDiff > 0) next.push(lineFromCatalog(getCi("q7"), { mulO: questDiff }));
-    if (setDiff > 0) next.push(lineFromCatalog(getCi("q8"), { mulO: setDiff }));
-    setLines(next);
+
+    if (weekDiff > 0) pushUnique("q6", { mulO: weekDiff });
+    if (questDiff > 0) pushUnique("q7", { mulO: questDiff });
+    if (setDiff > 0) pushUnique("q8", { mulO: setDiff });
+
+    lines.forEach(l => {
+      const ci = getCi(l.lid);
+      if (!ci) return;
+      if (next.find(x => x.lid === l.lid)) return;
+      if (l.lid === "d1" || l.lid === "d2") return;
+      next.push(l);
+    });
+
+    pushUnique("d1");
+    pushUnique("d2");
+
+    setLines(sortLinesForDisplay(next));
   };
 
   const addLine = (id) => {
@@ -252,9 +283,9 @@ export default function App() {
       sp("setItemsPerProduct", 1);
       sp("designProducts", ci.hutProducts);
     }
-    setLines(ls => [...ls, lineFromCatalog(ci)]);
+    setLines(ls => sortLinesForDisplay([...ls, lineFromCatalog(ci)]));
   };
-  const removeLine = (id) => setLines(ls => ls.filter(l => l.lid !== id));
+  const removeLine = (id) => setLines(ls => sortLinesForDisplay(ls.filter(l => l.lid !== id)));
   const updLine = (id, k, v) => {
     const ci = getCi(id);
     setLines(ls => ls.map(l => {

@@ -1,13 +1,17 @@
+
 import { useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 
 function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
 function skipWE(d) { const r = new Date(d); while (r.getDay() === 0 || r.getDay() === 6) r.setDate(r.getDate() + 1); return r; }
 function skipAdd(d, n) { return skipWE(addDays(d, n)); }
-function fmt(d) { if (!d) return "—"; return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`; }
+function backDays(d, n) { const r = new Date(d); r.setDate(r.getDate() - n); return r; }
+function skipBack(d, n) { return skipWE(backDays(d, n)); }
+function fmt(d) { if (!d || Number.isNaN(new Date(d).getTime())) return "—"; const x = new Date(d); return `${x.getFullYear()}/${String(x.getMonth() + 1).padStart(2, "0")}/${String(x.getDate()).padStart(2, "0")}`; }
 function fmtRMB(n) { return `¥${Number(n || 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
 function clampInt(v, min = 0) { const n = Number(v); if (!Number.isFinite(n)) return min; return Math.max(min, Math.round(n)); }
 function cleanNum(v) { if (v === "" || v == null) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
+function dateStr(d) { return new Date(d).toISOString().split("T")[0]; }
 
 const DIFF_FACTOR = { easy: 1.0, normal: 1.25, hard: 1.5 };
 const DIFF_OPTS = [
@@ -44,7 +48,7 @@ let _nid = 500;
 const SYSTEM_IDS = new Set([
   "q1","q2","q3","q4","q5","q6","q7","q8","q9","q10",
   "ql1","ql2","ql3","ql4","ql5","ql6","ql7","ql8",
-  "a1","a2","a3","a4","d1","d2","d3","d4"
+  "a1","a2","a3","a4","d1","d2","d3","d4","d5"
 ]);
 
 const INIT_CATALOG = [
@@ -55,7 +59,7 @@ const INIT_CATALOG = [
   { id:"q5",  cat:"定量·HUT留置", name:"宣称支持留置（1周·2份问卷）",          unitPrice:260,  calcType:"ppp", notes:"",              hutWeeks:1, hutQuestionnaires:2, hutProducts:1, locked:true },
   { id:"q6",  cat:"定量·HUT留置", name:"额外：每增加1周使用",                  unitPrice:25,   calcType:"ppp", notes:"叠加在基础款上", isExtraWeek:true, locked:true },
   { id:"q7",  cat:"定量·HUT留置", name:"额外：每增加1份回访问卷",              unitPrice:50,   calcType:"ppp", notes:"",              isExtraQuestionnaire:true, locked:true },
-  { id:"q8",  cat:"定量·HUT留置", name:"额外：每增加1个留置产品",              unitPrice:20,   calcType:"ppp", notes:"",              isExtraProduct:true, locked:true },
+  { id:"q8",  cat:"定量·HUT留置", name:"额外：每增加1个留置产品（仅单产品为套装时）", unitPrice:20, calcType:"ppp", notes:"仅用于单产品内的额外套装件数", isExtraProduct:true, locked:true },
   { id:"q9",  cat:"定量·CLT定点", name:"定点测试CLT（30分钟内）",              unitPrice:280,  calcType:"pp",  notes:"", locked:true },
   { id:"q10", cat:"定量·CLT定点", name:"定点测试CLT（60分钟内）",              unitPrice:350,  calcType:"pp",  notes:"", locked:true },
   { id:"ql1", cat:"定性研究",     name:"一对一深访（1小时·线上）",             unitPrice:4167, calcType:"ses", notes:"差旅不含", locked:true },
@@ -74,14 +78,24 @@ const INIT_CATALOG = [
   { id:"d2",  cat:"交付与通用",   name:"完整报告",                           unitPrice:4000, calcType:"prod",notes:"", locked:true },
   { id:"d3",  cat:"交付与通用",   name:"项目管理费",                         unitPrice:1000, calcType:"prod",notes:"含样本小组建立/维护", locked:true },
   { id:"d4",  cat:"交付与通用",   name:"盲包",                              unitPrice:20,   calcType:"ppp", notes:"需灏图提供盲包时", locked:true },
+  { id:"d5",  cat:"交付与通用",   name:"消费者招募费",                       unitPrice:80,   calcType:"pp",  notes:"支持库内/库外拆分", panelEligible:true, locked:true },
 ];
 
-const CALC_LABELS = { ppp:"单产品N × 产品数", pp:"× 总样本量", prod:"× 产品数", ses:"× 场次数", fix:"固定金额" };
+const CALC_LABELS = { ppp:"单产品N × 整体产品数", pp:"× 总样本量", prod:"× 整体产品数", ses:"× 场次数", fix:"固定金额" };
 const CATS = ["交付与通用","定量·HUT留置","定量·CLT定点","定性研究","高阶技术"];
 const HUT_BASE_IDS = ["q1", "q2", "q3", "q4", "q5"];
+const ADJUSTABLE_PHASES = ["screen","recruit","mainQ","topline","report"];
 
 function lineFromCatalog(ci, more = {}) {
-  return { lid: ci.id, qtyO: null, priceO: null, mulO: ci.isExtraWeek || ci.isExtraQuestionnaire || ci.isExtraProduct ? 1 : null, ...more };
+  return {
+    lid: ci.id,
+    qtyO: null,
+    priceO: null,
+    mulO: ci.isExtraWeek || ci.isExtraQuestionnaire || ci.isExtraProduct ? 1 : null,
+    panelSplit: false,
+    panelOutsideRatio: 50,
+    ...more
+  };
 }
 
 export default function App() {
@@ -96,6 +110,7 @@ export default function App() {
     designProducts: 1,
     designWeeks: 1,
     designQuestionnaires: 1,
+    setItemsPerProduct: 1,
     sessions: 0,
     courierDays: 2,
     difficulty: "normal",
@@ -104,6 +119,11 @@ export default function App() {
     recruitDaysManual: "",
     toplineDaysManual: "",
     reportDaysManual: "",
+    screenDaysManual: "",
+    mainQDaysManual: "",
+    ddlMode: "none",
+    targetToplineEnd: "",
+    targetReportEnd: "",
   });
   const sp = (k, v) => setP_(c => ({ ...c, [k]: v }));
   const [lines, setLines] = useState([]);
@@ -118,21 +138,24 @@ export default function App() {
       hasHUT: true,
       baseId: base.id,
       baseName: base.name,
+      overallProducts: clampInt(p.designProducts, 1),
       hutWeeks: clampInt(p.designWeeks, 1),
       hutQuestionnaires: clampInt(p.designQuestionnaires, 1),
-      hutProducts: clampInt(p.designProducts, 1),
+      setItemsPerProduct: clampInt(p.setItemsPerProduct, 1),
       baseWeeks: base.hutWeeks || 1,
       baseQuestionnaires: base.hutQuestionnaires || 1,
       baseProducts: base.hutProducts || 1,
     };
-  }, [selectedBase, p.designWeeks, p.designQuestionnaires, p.designProducts]);
+  }, [selectedBase, p.designWeeks, p.designQuestionnaires, p.designProducts, p.setItemsPerProduct]);
 
-  const totalN = p.totalNAuto ? clampInt(p.perProductN, 1) * design.hutProducts : clampInt(p.totalNManual, 1);
+  const totalN = p.totalNAuto ? clampInt(p.perProductN, 1) * design.overallProducts : clampInt(p.totalNManual, 1);
   const recruitDaysAuto = calcRecruitDays(totalN, p.difficulty);
   const recruitDays = cleanNum(p.recruitDaysManual) ?? recruitDaysAuto;
+  const screenDays = cleanNum(p.screenDaysManual) ?? 3;
+  const mainQDays = cleanNum(p.mainQDaysManual) ?? 3;
   const leaveDays = design.hutWeeks * 7 + clampInt(p.courierDays, 0);
-  const toplineDaysAuto = calcToplineDays(design.hutProducts);
-  const reportDaysAuto = calcReportDays(design.hutProducts);
+  const toplineDaysAuto = calcToplineDays(design.overallProducts);
+  const reportDaysAuto = calcReportDays(design.overallProducts);
   const toplineDays = cleanNum(p.toplineDaysManual) ?? toplineDaysAuto;
   const reportDays = cleanNum(p.reportDaysManual) ?? reportDaysAuto;
 
@@ -148,36 +171,50 @@ export default function App() {
     const prodExtra = byId("q8");
     const weekDiff = Math.max(0, design.hutWeeks - design.baseWeeks);
     const questDiff = Math.max(0, design.hutQuestionnaires - design.baseQuestionnaires);
-    const prodDiff = Math.max(0, design.hutProducts - design.baseProducts);
+    const setDiff = Math.max(0, design.setItemsPerProduct - 1);
 
     if ((weekExtra?.mulO ?? (weekExtra ? 1 : 0)) !== weekDiff) issues.push("“额外增加周数”与当前研究设计不一致，建议点击“同步报价项”。");
     if ((questExtra?.mulO ?? (questExtra ? 1 : 0)) !== questDiff) issues.push("“额外增加问卷”与当前研究设计不一致，建议点击“同步报价项”。");
-    if ((prodExtra?.mulO ?? (prodExtra ? 1 : 0)) !== prodDiff) issues.push("“额外增加产品”与当前研究设计不一致，建议点击“同步报价项”。");
+    if ((prodExtra?.mulO ?? (prodExtra ? 1 : 0)) !== setDiff) issues.push("“额外增加留置产品（套装件数）”与当前研究设计不一致，建议点击“同步报价项”。");
     if (!lines.find(l => l.lid === design.baseId)) issues.push("当前研究设计对应的 HUT 基础项尚未加入报价，建议点击“同步报价项”。");
+    if (design.overallProducts > 1 && setDiff > 0) issues.push("当前已将“整体产品数”和“单产品内套装件数”同时增加，请确认 q8 仅用于单产品为套装的情况。");
 
     return issues;
   }, [lines, design, catalog]);
 
   const autoQty = (ci) => {
+    if (ci.isExtraProduct) return clampInt(p.perProductN, 1) * design.overallProducts;
     switch (ci.calcType) {
-      case "ppp": return clampInt(p.perProductN, 1) * design.hutProducts;
+      case "ppp": return clampInt(p.perProductN, 1) * design.overallProducts;
       case "pp": return totalN;
-      case "prod": return design.hutProducts;
+      case "prod": return design.overallProducts;
       case "ses": return hasQual ? clampInt(p.sessions, 0) : 0;
       default: return 1;
     }
   };
 
-  const lineRows = useMemo(() => lines.map(l => {
-    const ci = getCi(l.lid);
-    if (!ci) return null;
-    const qty = l.qtyO ?? autoQty(ci);
-    const price = l.priceO ?? ci.unitPrice;
-    const mul = l.mulO ?? 1;
-    return { ...l, ci, qty, price, mul, total: qty * price * mul };
-  }).filter(Boolean), [lines, catalog, p, design, totalN, hasQual]);
+  const expandedLineRows = useMemo(() => {
+    const rows = [];
+    lines.forEach((l) => {
+      const ci = getCi(l.lid);
+      if (!ci) return;
+      const qty = l.qtyO ?? autoQty(ci);
+      const price = l.priceO ?? ci.unitPrice;
+      const mul = l.mulO ?? 1;
+      if (ci.panelEligible && l.panelSplit) {
+        const outsideRatio = Math.min(100, Math.max(0, clampInt(l.panelOutsideRatio, 0)));
+        const outsideQty = Math.round(qty * outsideRatio / 100);
+        const insideQty = qty - outsideQty;
+        if (insideQty > 0) rows.push({ ...l, ci, qty: insideQty, price, mul, total: insideQty * price * mul, splitTag:"库内", splitNote:`库内 ${insideQty} 人` });
+        if (outsideQty > 0) rows.push({ ...l, ci, qty: outsideQty, price: +(price * 1.2).toFixed(2), mul, total: outsideQty * +(price * 1.2).toFixed(2) * mul, splitTag:"库外", splitNote:`库外 ${outsideQty} 人（1.2倍）` });
+      } else {
+        rows.push({ ...l, ci, qty, price, mul, total: qty * price * mul, splitTag:"", splitNote:"" });
+      }
+    });
+    return rows;
+  }, [lines, catalog, p, design, totalN, hasQual]);
 
-  const sub = lineRows.reduce((s, r) => s + r.total, 0);
+  const sub = expandedLineRows.reduce((s, r) => s + r.total, 0);
   const gross = +(sub * (1 + clampInt(p.vatRate, 0) / 100)).toFixed(2);
 
   const syncHUTLines = () => {
@@ -188,10 +225,10 @@ export default function App() {
     const next = [...keep, lineFromCatalog(getCi(design.baseId), { mulO: null })];
     const weekDiff = Math.max(0, design.hutWeeks - design.baseWeeks);
     const questDiff = Math.max(0, design.hutQuestionnaires - design.baseQuestionnaires);
-    const prodDiff = Math.max(0, design.hutProducts - design.baseProducts);
+    const setDiff = Math.max(0, design.setItemsPerProduct - 1);
     if (weekDiff > 0) next.push(lineFromCatalog(getCi("q6"), { mulO: weekDiff }));
     if (questDiff > 0) next.push(lineFromCatalog(getCi("q7"), { mulO: questDiff }));
-    if (prodDiff > 0) next.push(lineFromCatalog(getCi("q8"), { mulO: prodDiff }));
+    if (setDiff > 0) next.push(lineFromCatalog(getCi("q8"), { mulO: setDiff }));
     setLines(next);
   };
 
@@ -203,6 +240,7 @@ export default function App() {
       sp("designBaseId", ci.id);
       sp("designWeeks", ci.hutWeeks);
       sp("designQuestionnaires", ci.hutQuestionnaires);
+      sp("setItemsPerProduct", 1);
       sp("designProducts", ci.hutProducts);
     }
     setLines(ls => [...ls, lineFromCatalog(ci)]);
@@ -212,6 +250,8 @@ export default function App() {
     const ci = getCi(id);
     setLines(ls => ls.map(l => {
       if (l.lid !== id) return l;
+      if (k === "panelSplit") return { ...l, panelSplit: !!v };
+      if (k === "panelOutsideRatio") return { ...l, panelOutsideRatio: Math.min(100, Math.max(0, clampInt(v, 0))) };
       const val = v === "" ? null : Math.max(0, Number(v));
       if ((ci?.hutWeeks != null) && k === "mulO") return { ...l, [k]: null };
       return { ...l, [k]: Number.isFinite(val) ? val : null };
@@ -226,44 +266,127 @@ export default function App() {
   };
   const addCat = () => {
     _nid += 1;
-    setCatalog(arr => [...arr, { id:`x${_nid}`, cat:"交付与通用", name:"新费用项", unitPrice:0, calcType:"fix", notes:"", locked:false }]);
+    setCatalog(arr => [...arr, { id:`x${_nid}`, cat:"交付与通用", name:"新费用项", unitPrice:0, calcType:"fix", notes:"", locked:false, panelEligible:false }]);
   };
 
-  const timeline = useMemo(() => {
+  const autoProjection = useMemo(() => {
     const s = skipWE(new Date(p.startDate));
-    const screenEnd = skipAdd(s, 3);
+    const screenEnd = skipAdd(s, screenDays);
     const rEnd = skipAdd(screenEnd, recruitDays);
-    const mEnd = skipAdd(rEnd, 3);
+    const attr = skipWE(addDays(rEnd, -2));
+    const mEnd = skipAdd(rEnd, mainQDays);
     const lEnd = skipAdd(rEnd, leaveDays);
     const tEnd = skipAdd(lEnd, toplineDays);
     const rpEnd = skipAdd(tEnd, reportDays);
-    const attr = skipWE(addDays(rEnd, -2));
+    return { s, screenEnd, rEnd, attr, mEnd, lEnd, tEnd, rpEnd };
+  }, [p.startDate, screenDays, recruitDays, mainQDays, leaveDays, toplineDays, reportDays]);
+
+  const ddlAnalysis = useMemo(() => {
+    const fixedLeave = leaveDays;
+    const adjustableAuto = screenDays + recruitDays + mainQDays + toplineDays + reportDays;
+    const targetTop = p.targetToplineEnd ? skipWE(new Date(p.targetToplineEnd)) : null;
+    const targetRep = p.targetReportEnd ? skipWE(new Date(p.targetReportEnd)) : null;
+    let selectedTarget = null;
+    let chainEnd = null;
+    let modeLabel = "";
+    if (p.ddlMode === "topline" && targetTop) {
+      selectedTarget = targetTop;
+      chainEnd = backDays(targetTop, reportDays);
+      modeLabel = "按 Topline 截止倒推";
+    } else if (p.ddlMode === "report" && targetRep) {
+      selectedTarget = targetRep;
+      chainEnd = targetRep;
+      modeLabel = "按 Report 截止倒推";
+    } else {
+      return { active:false, message:"未启用倒推", requiredReduction:0, adjustableAuto, selectedTarget:null, modeLabel:"", reverse:null };
+    }
+
+    const autoEnd = p.ddlMode === "topline" ? autoProjection.tEnd : autoProjection.rpEnd;
+    const gapDays = Math.max(0, Math.ceil((autoEnd - selectedTarget) / 86400000));
+
+    const reverse = (() => {
+      const reportEnd = p.ddlMode === "report" ? selectedTarget : skipWE(addDays(chainEnd, reportDays));
+      const reportStart = skipBack(reportEnd, reportDays);
+      const toplineEnd = p.ddlMode === "topline" ? selectedTarget : reportStart;
+      const toplineStart = skipBack(toplineEnd, toplineDays);
+      const leaveEnd = toplineStart;
+      const recruitEnd = skipBack(leaveEnd, fixedLeave);
+      const mainQEnd = leaveEnd;
+      const mainQStart = skipBack(mainQEnd, mainQDays);
+      const recruitStart = skipBack(recruitEnd, recruitDays);
+      const screenEnd = recruitStart;
+      const screenStart = skipBack(screenEnd, screenDays);
+      const attr = skipWE(addDays(recruitEnd, -2));
+      return { screenStart, screenEnd, recruitStart, recruitEnd, mainQStart, mainQEnd, leaveEnd, toplineStart, toplineEnd, reportStart, reportEnd, attr };
+    })();
+
+    const message = gapDays > 0
+      ? `当前自动排期无法满足 ${modeLabel}。若保持“派发和留置”不变，需从可调整环节（甄别问卷 / 招募 / 主问卷 / Topline / Report）合计缩减至少 ${gapDays} 天。`
+      : `当前手动天数设置已可满足 ${modeLabel}。如需进一步加急，可继续缩短可调整环节。`;
+
+    return { active:true, message, requiredReduction:gapDays, adjustableAuto, selectedTarget, modeLabel, reverse };
+  }, [p.ddlMode, p.targetToplineEnd, p.targetReportEnd, autoProjection, screenDays, recruitDays, mainQDays, leaveDays, toplineDays, reportDays]);
+
+  const timeline = useMemo(() => {
+    const useReverse = ddlAnalysis.active && ddlAnalysis.reverse;
+    const a = autoProjection;
+    const r = ddlAnalysis.reverse;
+    const build = useReverse ? {
+      s: r.screenStart,
+      screenEnd: r.screenEnd,
+      rStart: r.recruitStart,
+      rEnd: r.recruitEnd,
+      attr: r.attr,
+      mStart: r.mainQStart,
+      mEnd: r.mainQEnd,
+      lStart: r.recruitEnd,
+      lEnd: r.leaveEnd,
+      tStart: r.toplineStart,
+      tEnd: r.toplineEnd,
+      rpStart: r.reportStart,
+      rpEnd: r.reportEnd
+    } : {
+      s: a.s,
+      screenEnd: a.screenEnd,
+      rStart: a.screenEnd,
+      rEnd: a.rEnd,
+      attr: a.attr,
+      mStart: a.rEnd,
+      mEnd: a.mEnd,
+      lStart: a.rEnd,
+      lEnd: a.lEnd,
+      tStart: a.lEnd,
+      tEnd: a.tEnd,
+      rpStart: a.tEnd,
+      rpEnd: a.rpEnd
+    };
+
     return [
-      { phase:"项目确认 / PO", days:"/", start:"—", end:fmt(s), note:"项目起始节点" },
-      { phase:"甄别问卷确认", days:3, start:fmt(s), end:fmt(screenEnd), note:"与主问卷可并行准备" },
-      { phase:`招募（${recruitWeeksStr(totalN, p.difficulty)}）`, days:recruitDays, start:fmt(screenEnd), end:fmt(rEnd), note:`按总N=${totalN}、${DIFF_OPTS.find(d=>d.value===p.difficulty)?.label}估算；支持手动覆盖` },
-      { phase:"提供 Attributes", days:"/", start:"—", end:fmt(attr), note:"建议招募结束前2天" },
-      { phase:"产品到达", days:"/", start:"—", end:fmt(attr), note:"建议招募结束前2天" },
-      { phase:"主问卷确认", days:3, start:fmt(rEnd), end:fmt(mEnd), note:"固定预留" },
-      { phase:`派发和留置（含快递${clampInt(p.courierDays, 0)}天）`, days:leaveDays, start:fmt(rEnd), end:fmt(lEnd), note:`${design.hutWeeks}周 × 7天 + 快递${clampInt(p.courierDays, 0)}天` },
-      { phase:`Topline（${design.hutProducts}款）`, days:toplineDays, start:fmt(lEnd), end:fmt(tEnd), note:`仅受产品数量影响；当前自动=${toplineDaysAuto}天` },
-      { phase:`Report（${design.hutProducts}款）`, days:reportDays, start:fmt(tEnd), end:fmt(rpEnd), note:`仅受产品数量影响；当前自动=${reportDaysAuto}天` },
+      { phase:"项目确认 / PO", days:"/", start:"—", end:fmt(build.s), note: useReverse ? `按DDL倒推后建议最晚启动日期` : "项目起始节点" },
+      { phase:"甄别问卷确认", days:screenDays, start:fmt(build.s), end:fmt(build.screenEnd), note:"可手动调整" },
+      { phase:`招募（${recruitWeeksStr(totalN, p.difficulty)}）`, days:recruitDays, start:fmt(build.rStart), end:fmt(build.rEnd), note:`按总N=${totalN}、${DIFF_OPTS.find(d=>d.value===p.difficulty)?.label}估算；支持手动覆盖` },
+      { phase:"提供 Attributes", days:"/", start:"—", end:fmt(build.attr), note:"建议招募结束前2天" },
+      { phase:"产品到达", days:"/", start:"—", end:fmt(build.attr), note:"建议招募结束前2天" },
+      { phase:"主问卷确认", days:mainQDays, start:fmt(build.mStart), end:fmt(build.mEnd), note:"可手动调整" },
+      { phase:`派发和留置（含快递${clampInt(p.courierDays, 0)}天）`, days:leaveDays, start:fmt(build.lStart), end:fmt(build.lEnd), note:`固定不可加急：${design.hutWeeks}周 × 7天 + 快递${clampInt(p.courierDays, 0)}天` },
+      { phase:`Topline（${design.overallProducts}款）`, days:toplineDays, start:fmt(build.tStart), end:fmt(build.tEnd), note:`仅受整体产品数影响；当前自动=${toplineDaysAuto}天` },
+      { phase:`Report（${design.overallProducts}款）`, days:reportDays, start:fmt(build.rpStart), end:fmt(build.rpEnd), note:`仅受整体产品数影响；当前自动=${reportDaysAuto}天` },
     ];
-  }, [p.startDate, p.difficulty, p.courierDays, totalN, recruitDays, leaveDays, toplineDays, reportDays, design, toplineDaysAuto, reportDaysAuto]);
+  }, [autoProjection, ddlAnalysis, screenDays, recruitDays, mainQDays, leaveDays, design, toplineDays, reportDays, totalN, p.courierDays, p.difficulty, toplineDaysAuto, reportDaysAuto]);
 
   const exportXLSX = () => {
     const wb = XLSX.utils.book_new();
     const ws1 = XLSX.utils.aoa_to_sheet([
       [p.title],
-      [`研究设计：${design.baseName}｜产品数:${design.hutProducts}｜单产品N:${p.perProductN}｜总N:${totalN}｜留置:${design.hutWeeks}周｜问卷:${design.hutQuestionnaires}份`],
+      [`研究设计：${design.baseName}｜整体产品数:${design.overallProducts}｜单产品套装件数:${design.setItemsPerProduct}｜单产品N:${p.perProductN}｜总N:${totalN}｜留置:${design.hutWeeks}周｜问卷:${design.hutQuestionnaires}份`],
       [],
-      ["费用项目","计算方式","单价(RMB)","数量","倍数","小计(RMB)"],
-      ...lineRows.map(r => [r.ci.name, CALC_LABELS[r.ci.calcType], r.price, r.qty, r.mul, r.total]),
+      ["费用项目","拆分","计算方式","单价(RMB)","数量","倍数","小计(RMB)"],
+      ...expandedLineRows.map(r => [r.ci.name, r.splitTag || "—", CALC_LABELS[r.ci.calcType], r.price, r.qty, r.mul, r.total]),
       [],
-      [`Cost (before VAT ${p.vatRate}%)`, "", "", "", "", sub],
-      [`Cost (after VAT ${p.vatRate}%)`, "", "", "", "", gross],
+      [`Cost (before VAT ${p.vatRate}%)`, "", "", "", "", "", sub],
+      [`Cost (after VAT ${p.vatRate}%)`, "", "", "", "", "", gross],
     ]);
-    ws1["!cols"] = [{wch:44},{wch:18},{wch:12},{wch:10},{wch:8},{wch:16}];
+    ws1["!cols"] = [{wch:42},{wch:8},{wch:18},{wch:12},{wch:10},{wch:8},{wch:16}];
     XLSX.utils.book_append_sheet(wb, ws1, "报价");
 
     const ws2 = XLSX.utils.aoa_to_sheet([
@@ -272,7 +395,7 @@ export default function App() {
       ["阶段","时间（天）","开始日期","结束日期","说明"],
       ...timeline.map(r => [r.phase, r.days, r.start, r.end, r.note]),
     ]);
-    ws2["!cols"] = [{wch:36},{wch:10},{wch:14},{wch:14},{wch:38}];
+    ws2["!cols"] = [{wch:36},{wch:10},{wch:14},{wch:14},{wch:42}];
     XLSX.utils.book_append_sheet(wb, ws2, "时间表");
     XLSX.writeFile(wb, `${p.title}_报价.xlsx`);
   };
@@ -300,7 +423,7 @@ export default function App() {
         </div>
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"320px 1fr", gap:18, padding:"18px 28px", maxWidth:1480, margin:"0 auto" }}>
+      <div style={{ display:"grid", gridTemplateColumns:"360px 1fr", gap:18, padding:"18px 28px", maxWidth:1540, margin:"0 auto" }}>
         <div>
           <div style={S.card}>
             <div style={S.cardTitle}>研究设计（优先输入）</div>
@@ -311,6 +434,7 @@ export default function App() {
                 if (ci) {
                   sp("designWeeks", ci.hutWeeks || 1);
                   sp("designQuestionnaires", ci.hutQuestionnaires || 1);
+                  sp("setItemsPerProduct", 1);
                   sp("designProducts", ci.hutProducts || 1);
                 }
               }}>
@@ -321,24 +445,30 @@ export default function App() {
               </select>
             </F>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-              <F label="产品数量">
+              <F label="整体测试产品数">
                 <input className="inp" type="number" min={1} value={p.designProducts} onChange={e => sp("designProducts", clampInt(e.target.value, 1))} />
               </F>
+              <F label="单产品内套装件数">
+                <input className="inp" type="number" min={1} value={p.setItemsPerProduct} onChange={e => sp("setItemsPerProduct", clampInt(e.target.value, 1))} />
+              </F>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
               <F label="留置周数">
                 <input className="inp" type="number" min={1} value={p.designWeeks} onChange={e => sp("designWeeks", clampInt(e.target.value, 1))} />
               </F>
+              <F label="问卷份数">
+                <input className="inp" type="number" min={1} value={p.designQuestionnaires} onChange={e => sp("designQuestionnaires", clampInt(e.target.value, 1))} />
+              </F>
             </div>
-            <F label="问卷份数">
-              <input className="inp" type="number" min={1} value={p.designQuestionnaires} onChange={e => sp("designQuestionnaires", clampInt(e.target.value, 1))} />
-            </F>
             <div style={{ display:"flex", gap:8, marginTop:8, flexWrap:"wrap" }}>
               <button onClick={syncHUTLines} style={S.btnDark}>同步 HUT 报价项</button>
-              <button onClick={() => { sp("designBaseId", "q1"); sp("designProducts", 1); sp("designWeeks", 1); sp("designQuestionnaires", 1); }} style={S.btnGhost}>恢复基础设计</button>
+              <button onClick={() => { sp("designBaseId", "q1"); sp("designProducts", 1); sp("setItemsPerProduct", 1); sp("designWeeks", 1); sp("designQuestionnaires", 1); }} style={S.btnGhost}>恢复基础设计</button>
             </div>
             <div style={{ background:"#f0ebe3", borderRadius:6, padding:"12px", marginTop:14, fontSize:12, lineHeight:2 }}>
               {[
                 ["当前基础项", design.baseName],
-                ["产品数量", `${design.hutProducts} 款`],
+                ["整体测试产品数", `${design.overallProducts} 款`],
+                ["单产品内套装件数", `${design.setItemsPerProduct} 件`],
                 ["留置周数", `${design.hutWeeks} 周`],
                 ["问卷份数", `${design.hutQuestionnaires} 份`],
               ].map(([k, v]) => (
@@ -348,6 +478,7 @@ export default function App() {
                 </div>
               ))}
             </div>
+            <div style={S.helpBox}>说明：整体测试产品数只影响总样本量与 Topline / Report；“额外：每增加1个留置产品”仅对应单产品为套装时的额外件数。</div>
           </div>
 
           <div style={S.card}>
@@ -358,7 +489,7 @@ export default function App() {
                 <input className="inp" type="number" min={1} value={p.perProductN} onChange={e => {
                   const v = clampInt(e.target.value, 1);
                   sp("perProductN", v);
-                  if (p.totalNAuto) sp("totalNManual", v * design.hutProducts);
+                  if (p.totalNAuto) sp("totalNManual", v * design.overallProducts);
                 }} />
               </F>
               <label style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, cursor:"pointer", fontSize:12, color:"#888" }}>
@@ -367,11 +498,11 @@ export default function App() {
                   checked={p.totalNAuto}
                   onChange={e => {
                     sp("totalNAuto", e.target.checked);
-                    if (e.target.checked) sp("totalNManual", clampInt(p.perProductN, 1) * design.hutProducts);
+                    if (e.target.checked) sp("totalNManual", clampInt(p.perProductN, 1) * design.overallProducts);
                   }}
                   style={{ width:15, height:15, accentColor:"#7a6e5f" }}
                 />
-                总N 自动 = 单产品N × 产品数
+                总N 自动 = 单产品N × 整体测试产品数
               </label>
               <F label={`总样本量 N${p.totalNAuto ? " (自动)" : ""}`} last>
                 <input
@@ -397,17 +528,53 @@ export default function App() {
                 {DIFF_OPTS.map(d => <option key={d.value} value={d.value}>{d.label}（系数×{d.factor}）</option>)}
               </select>
             </F>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-              <F label={`招募天数（自动 ${recruitDaysAuto}）`}>
-                <input className="inp" type="number" min={1} placeholder={`${recruitDaysAuto}`} value={p.recruitDaysManual} onChange={e => sp("recruitDaysManual", e.target.value)} />
+
+            <div style={{ background:"#f7f4ef", borderRadius:6, padding:"12px", marginTop:10, border:"1px solid #ede9e2" }}>
+              <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#7a6e5f", marginBottom:10, fontWeight:700 }}>可调整环节天数（加急时请人工修改）</div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                <F label="甄别问卷确认（自动 3）">
+                  <input className="inp" type="number" min={1} placeholder="3" value={p.screenDaysManual} onChange={e => sp("screenDaysManual", e.target.value)} />
+                </F>
+                <F label={`招募天数（自动 ${recruitDaysAuto}）`}>
+                  <input className="inp" type="number" min={1} placeholder={`${recruitDaysAuto}`} value={p.recruitDaysManual} onChange={e => sp("recruitDaysManual", e.target.value)} />
+                </F>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                <F label="主问卷确认（自动 3）">
+                  <input className="inp" type="number" min={1} placeholder="3" value={p.mainQDaysManual} onChange={e => sp("mainQDaysManual", e.target.value)} />
+                </F>
+                <F label={`Topline 天数（自动 ${toplineDaysAuto}）`}>
+                  <input className="inp" type="number" min={1} placeholder={`${toplineDaysAuto}`} value={p.toplineDaysManual} onChange={e => sp("toplineDaysManual", e.target.value)} />
+                </F>
+              </div>
+              <F label={`Report 天数（自动 ${reportDaysAuto}）`} last>
+                <input className="inp" type="number" min={1} placeholder={`${reportDaysAuto}`} value={p.reportDaysManual} onChange={e => sp("reportDaysManual", e.target.value)} />
               </F>
-              <F label={`Topline 天数（自动 ${toplineDaysAuto}）`}>
-                <input className="inp" type="number" min={1} placeholder={`${toplineDaysAuto}`} value={p.toplineDaysManual} onChange={e => sp("toplineDaysManual", e.target.value)} />
-              </F>
+              <div style={S.helpBox}>“派发和留置”固定不可加急缩短；其余环节可按实际情况手动压缩。</div>
             </div>
-            <F label={`Report 天数（自动 ${reportDaysAuto}）`}>
-              <input className="inp" type="number" min={1} placeholder={`${reportDaysAuto}`} value={p.reportDaysManual} onChange={e => sp("reportDaysManual", e.target.value)} />
-            </F>
+
+            <div style={{ background:"#fff7ed", border:"1px solid #f1d4a9", borderRadius:6, padding:"12px", marginTop:12 }}>
+              <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a5a0a", marginBottom:10, fontWeight:700 }}>截止时间倒推（可选）</div>
+              <F label="倒推模式">
+                <select className="inp" value={p.ddlMode} onChange={e => sp("ddlMode", e.target.value)}>
+                  <option value="none">不启用倒推</option>
+                  <option value="topline">按 Topline 结束时间倒推</option>
+                  <option value="report">按 Report 结束时间倒推</option>
+                </select>
+              </F>
+              {p.ddlMode === "topline" && (
+                <F label="Topline 结束日期">
+                  <input className="inp" type="date" value={p.targetToplineEnd} onChange={e => sp("targetToplineEnd", e.target.value)} />
+                </F>
+              )}
+              {p.ddlMode === "report" && (
+                <F label="Report 结束日期">
+                  <input className="inp" type="date" value={p.targetReportEnd} onChange={e => sp("targetReportEnd", e.target.value)} />
+                </F>
+              )}
+              <div style={{ fontSize:11, color:"#8a5a0a", lineHeight:1.9 }}>{ddlAnalysis.message}</div>
+            </div>
+
             <F label="VAT 税率 (%)">
               <input className="inp" type="number" min={0} max={20} value={p.vatRate} onChange={e => sp("vatRate", clampInt(e.target.value, 0))} />
             </F>
@@ -424,13 +591,14 @@ export default function App() {
           )}
 
           <div style={{ background:"#2c2825", borderRadius:8, padding:"16px 18px", marginBottom:12 }}>
-            <div style={{ fontSize:10, fontWeight:700, letterSpacing:"0.08em", textTransform:"uppercase", color:"#9a8e80", marginBottom:10 }}>时间线预览（自动计算）</div>
+            <div style={{ fontSize:10, fontWeight:700, letterSpacing:"0.08em", textTransform:"uppercase", color:"#9a8e80", marginBottom:10 }}>时间线预览</div>
             {[
               ["招募周期", `${recruitDays}天 / ${recruitWeeksStr(totalN, p.difficulty)}`],
               ["留置总周期", `${leaveDays}天（${design.hutWeeks}周×7+快递${p.courierDays}天）`],
-              ["Topline", `${toplineDays}天（仅按${design.hutProducts}款计算）`],
-              ["Report", `${reportDays}天（仅按${design.hutProducts}款计算）`],
-              ["HUT计价数量", `${p.perProductN}×${design.hutProducts}=${clampInt(p.perProductN, 1) * design.hutProducts}`],
+              ["Topline", `${toplineDays}天（仅按${design.overallProducts}款计算）`],
+              ["Report", `${reportDays}天（仅按${design.overallProducts}款计算）`],
+              ["总样本量", `${p.perProductN}×${design.overallProducts}=${clampInt(p.perProductN, 1) * design.overallProducts}`],
+              ["套装件数计价", `${p.perProductN}×${design.overallProducts}×${design.setItemsPerProduct}`],
             ].map(([k, v]) => (
               <div key={k} style={{ display:"flex", justifyContent:"space-between", fontSize:11, padding:"5px 0", borderBottom:"1px solid #3d3530" }}>
                 <span style={{ color:"#9a8e80" }}>{k}</span>
@@ -460,45 +628,67 @@ export default function App() {
                 <table style={S.table}>
                   <thead>
                     <tr>
-                      <th style={{ ...S.th, width:"30%" }}>费用项目</th>
-                      <th style={{ ...S.th, width:"15%", fontSize:10 }}>计算基准</th>
-                      <th style={{ ...S.th, width:"12%", textAlign:"right" }}>单价 (¥)</th>
-                      <th style={{ ...S.th, width:"9%", textAlign:"right" }}>数量</th>
+                      <th style={{ ...S.th, width:"26%" }}>费用项目</th>
+                      <th style={{ ...S.th, width:"9%", textAlign:"center" }}>拆分</th>
+                      <th style={{ ...S.th, width:"14%", fontSize:10 }}>计算基准</th>
+                      <th style={{ ...S.th, width:"11%", textAlign:"right" }}>单价 (¥)</th>
+                      <th style={{ ...S.th, width:"8%", textAlign:"right" }}>数量</th>
                       <th style={{ ...S.th, width:"8%", textAlign:"center" }}>倍数 ×</th>
                       <th style={{ ...S.th, width:"14%", textAlign:"right" }}>小计 (¥)</th>
                       <th style={{ ...S.th, width:"6%" }}></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {lineRows.map((r, i) => {
+                    {expandedLineRows.map((r, i) => {
                       const isBase = r.ci.hutWeeks != null && !r.ci.isExtraWeek && !r.ci.isExtraQuestionnaire && !r.ci.isExtraProduct;
+                      const sourceLine = lines.find(x => x.lid === r.lid);
                       return (
-                        <tr key={r.lid} style={i % 2 === 1 ? { background:"#faf8f5" } : {}}>
+                        <tr key={`${r.lid}-${r.splitTag || "base"}-${i}`} style={i % 2 === 1 ? { background:"#faf8f5" } : {}}>
                           <td style={S.td}>
                             <div>{r.ci.name}</div>
                             <div style={{ marginTop:3, display:"flex", gap:4, flexWrap:"wrap" }}>
-                              {isBase && <span style={badgeBlue}>{r.ci.hutWeeks}周·{r.ci.hutQuestionnaires}卷·{r.ci.hutProducts}款</span>}
-                              {r.ci.isExtraWeek && <span style={badgeAmber}>+{r.mulO ?? 1}周</span>}
-                              {r.ci.isExtraQuestionnaire && <span style={badgeAmber}>+{r.mulO ?? 1}份问卷</span>}
-                              {r.ci.isExtraProduct && <span style={badgeAmber}>+{r.mulO ?? 1}款产品</span>}
+                              {isBase && <span style={badgeBlue}>{r.ci.hutWeeks}周·{r.ci.hutQuestionnaires}卷·基础{r.ci.hutProducts}款</span>}
+                              {r.ci.isExtraWeek && <span style={badgeAmber}>+{sourceLine?.mulO ?? 1}周</span>}
+                              {r.ci.isExtraQuestionnaire && <span style={badgeAmber}>+{sourceLine?.mulO ?? 1}份问卷</span>}
+                              {r.ci.isExtraProduct && <span style={badgeAmber}>套装内 +{sourceLine?.mulO ?? 1}件</span>}
+                              {r.ci.panelEligible && sourceLine?.panelSplit && <span style={badgeGreen}>Panel拆分</span>}
                             </div>
                           </td>
-                          <td style={{ ...S.td, fontSize:10, color:"#bbb", lineHeight:1.4 }}>{CALC_LABELS[r.ci.calcType]}</td>
+                          <td style={{ ...S.td, textAlign:"center", fontSize:11 }}>
+                            {r.splitTag || (r.ci.panelEligible && (
+                              <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                                <label style={{ fontSize:10, color:"#666" }}>
+                                  <input type="checkbox" checked={!!sourceLine?.panelSplit} onChange={e => updLine(r.lid, "panelSplit", e.target.checked)} style={{ marginRight:4 }} />
+                                  拆分
+                                </label>
+                                {sourceLine?.panelSplit && (
+                                  <input type="number" min={0} max={100} value={sourceLine?.panelOutsideRatio ?? 50} onChange={e => updLine(r.lid, "panelOutsideRatio", e.target.value)} style={{ ...S.mini, width:52, textAlign:"center" }} title="库外占比%" />
+                                )}
+                              </div>
+                            )) || "—"}
+                          </td>
+                          <td style={{ ...S.td, fontSize:10, color:"#bbb", lineHeight:1.4 }}>{CALC_LABELS[r.ci.calcType]}{r.ci.isExtraProduct ? "（按套装件数计）" : ""}</td>
                           <td style={{ ...S.td, textAlign:"right" }}>
-                            <input type="number" placeholder={r.ci.unitPrice} value={r.priceO ?? ""} onChange={e => updLine(r.lid, "priceO", e.target.value)} style={{ ...S.mini, width:80, textAlign:"right" }} title="留空=目录价" />
+                            {!r.splitTag ? (
+                              <input type="number" placeholder={r.ci.unitPrice} value={sourceLine?.priceO ?? ""} onChange={e => updLine(r.lid, "priceO", e.target.value)} style={{ ...S.mini, width:82, textAlign:"right" }} title="留空=目录价" />
+                            ) : <span style={{ fontFamily:"monospace" }}>{fmtRMB(r.price)}</span>}
                           </td>
                           <td style={{ ...S.td, textAlign:"right" }}>
-                            <input type="number" placeholder={autoQty(r.ci)} value={r.qtyO ?? ""} onChange={e => updLine(r.lid, "qtyO", e.target.value)} style={{ ...S.mini, width:58, textAlign:"right" }} title="留空=自动" />
+                            {!r.splitTag ? (
+                              <input type="number" placeholder={autoQty(r.ci)} value={sourceLine?.qtyO ?? ""} onChange={e => updLine(r.lid, "qtyO", e.target.value)} style={{ ...S.mini, width:58, textAlign:"right" }} title="留空=自动" />
+                            ) : <span style={{ fontFamily:"monospace" }}>{r.qty}</span>}
                           </td>
                           <td style={{ ...S.td, textAlign:"center" }}>
-                            <input type="number" min={1} placeholder={isBase ? "—" : "1"} value={isBase ? "" : (r.mulO ?? "")} disabled={isBase} onChange={e => updLine(r.lid, "mulO", e.target.value)} style={{ ...S.mini, width:44, textAlign:"center", ...(isBase ? { background:"#ede9e2", color:"#aaa" } : {}) }} title={isBase ? "基础项不使用倍数" : "倍数，留空=1"} />
+                            {!r.splitTag ? (
+                              <input type="number" min={1} placeholder={isBase ? "—" : "1"} value={isBase ? "" : (sourceLine?.mulO ?? "")} disabled={isBase} onChange={e => updLine(r.lid, "mulO", e.target.value)} style={{ ...S.mini, width:44, textAlign:"center", ...(isBase ? { background:"#ede9e2", color:"#aaa" } : {}) }} title={isBase ? "基础项不使用倍数" : "倍数，留空=1"} />
+                            ) : <span>{r.mul}</span>}
                           </td>
                           <td style={{ ...S.td, textAlign:"right", fontFamily:"monospace", fontWeight:600 }}>{fmtRMB(r.total)}</td>
-                          <td style={{ ...S.td, textAlign:"center" }}><button onClick={() => removeLine(r.lid)} style={S.delBtn}>×</button></td>
+                          <td style={{ ...S.td, textAlign:"center" }}>{!r.splitTag && <button onClick={() => removeLine(r.lid)} style={S.delBtn}>×</button>}</td>
                         </tr>
                       );
                     })}
-                    {!lineRows.length && <tr><td colSpan={7} style={{ ...S.td, color:"#ccc", textAlign:"center", padding:28 }}>暂无费用项，可先同步 HUT 项，再去「费用目录」添加其他费用</td></tr>}
+                    {!expandedLineRows.length && <tr><td colSpan={8} style={{ ...S.td, color:"#ccc", textAlign:"center", padding:28 }}>暂无费用项，可先同步 HUT 项，再去「费用目录」添加其他费用</td></tr>}
                   </tbody>
                 </table>
                 <div style={{ marginTop:12, display:"flex", justifyContent:"flex-end" }}>
@@ -517,9 +707,9 @@ export default function App() {
                 </div>
               </div>
               <div style={{ background:"#fffbf5", border:"1px solid #ece3d0", borderRadius:8, padding:"11px 15px", fontSize:11, color:"#9a8e80", lineHeight:2.1 }}>
-                <strong>HUT计价人次（单产品N×产品数）：</strong>{p.perProductN} × {design.hutProducts} = <strong>{clampInt(p.perProductN, 1) * design.hutProducts}</strong>
-                &emsp;|&emsp;<strong>CLT/定性总N：</strong>{totalN} 人
-                &emsp;|&emsp;Topline / Report 仅按产品数计算，不再受额外问卷影响
+                <strong>整体产品数影响总样本量：</strong>{p.perProductN} × {design.overallProducts} = <strong>{clampInt(p.perProductN, 1) * design.overallProducts}</strong>
+                &emsp;|&emsp;<strong>q8 套装件数计价：</strong>{p.perProductN} × {design.overallProducts} × {Math.max(0, design.setItemsPerProduct - 1)}
+                &emsp;|&emsp;Topline / Report 仅按整体产品数计算，不受额外问卷影响
                 &emsp;|&emsp;基础项倍数已锁定，避免金额与研究设计脱钩
               </div>
             </div>
@@ -559,10 +749,11 @@ export default function App() {
                             <tr key={ci.id} style={i % 2 === 1 ? { background:"#faf8f5" } : {}}>
                               <td style={S.td}>
                                 <input value={ci.name} onChange={e => updCat(ci.id, "name", e.target.value)} style={{ ...S.inlineInput, ...(ci.locked ? { background:"#f5f1eb" } : {}) }} />
-                                {ci.hutWeeks != null && <div style={{ fontSize:9, color:"#3a5a9a", marginTop:3 }}>📐 {ci.hutWeeks}周 · {ci.hutQuestionnaires}份问卷 · {ci.hutProducts}款</div>}
+                                {ci.hutWeeks != null && <div style={{ fontSize:9, color:"#3a5a9a", marginTop:3 }}>📐 {ci.hutWeeks}周 · {ci.hutQuestionnaires}份问卷 · 基础{ci.hutProducts}款</div>}
                                 {ci.isExtraWeek && <div style={{ fontSize:9, color:"#8a5a0a", marginTop:3 }}>⊕ 每倍数 +1周留置</div>}
                                 {ci.isExtraQuestionnaire && <div style={{ fontSize:9, color:"#8a5a0a", marginTop:3 }}>⊕ 每倍数 +1份问卷（仅影响报价，不影响Topline/Report）</div>}
-                                {ci.isExtraProduct && <div style={{ fontSize:9, color:"#8a5a0a", marginTop:3 }}>⊕ 每倍数 +1个产品</div>}
+                                {ci.isExtraProduct && <div style={{ fontSize:9, color:"#8a5a0a", marginTop:3 }}>⊕ 每倍数 +1个留置产品，仅用于套装件数</div>}
+                                {ci.panelEligible && <div style={{ fontSize:9, color:"#1f7a4d", marginTop:3 }}>⊕ 支持 Panel 库内 / 库外 1.2倍拆分</div>}
                                 {ci.locked && <div style={{ fontSize:9, color:"#999", marginTop:3 }}>系统默认目录项，不可删除</div>}
                               </td>
                               <td style={S.td}>
@@ -595,6 +786,12 @@ export default function App() {
           {tab === "timeline" && (
             <div style={S.card}>
               <div style={S.cardTitle}>项目时间表 · 关键节点周末自动顺延至下周一</div>
+              {ddlAnalysis.active && (
+                <div style={{ background:"#fff7ed", border:"1px solid #f1d4a9", borderRadius:6, padding:"12px 14px", color:"#8a5a0a", fontSize:12, lineHeight:1.9, marginBottom:12 }}>
+                  <div style={{ fontWeight:700, marginBottom:4 }}>{ddlAnalysis.modeLabel}</div>
+                  <div>{ddlAnalysis.message}</div>
+                </div>
+              )}
               <table style={S.table}>
                 <thead>
                   <tr>
@@ -621,8 +818,8 @@ export default function App() {
                 <strong style={{ color:"#7a6e5f" }}>招募周期：</strong>按样本量分段估算，并结合招募难度系数，上限不超过 28 天。当前自动：{recruitDaysAuto} 天<br/>
                 <strong style={{ color:"#7a6e5f" }}>Topline：</strong>7天基础；第3/5/7...款各 +3.5 天，不再因额外问卷增加时长。当前自动：{toplineDaysAuto} 天
                 &emsp;<strong style={{ color:"#7a6e5f" }}>Report：</strong>7天基础；每 +1 款增 3.5 天。当前自动：{reportDaysAuto} 天<br/>
-                <strong style={{ color:"#7a6e5f" }}>留置：</strong>{design.hutWeeks}周 × 7 + 快递 {p.courierDays} 天 = {leaveDays} 天
-                &emsp;<strong style={{ color:"#7a6e5f" }}>当前设计：</strong>{design.hutProducts}款 · {design.hutWeeks}周 · {design.hutQuestionnaires}份问卷
+                <strong style={{ color:"#7a6e5f" }}>留置：</strong>{design.hutWeeks}周 × 7 + 快递 {p.courierDays} 天 = {leaveDays} 天（固定不可压缩）
+                &emsp;<strong style={{ color:"#7a6e5f" }}>当前设计：</strong>{design.overallProducts}款 · 套装{design.setItemsPerProduct}件 · {design.hutWeeks}周 · {design.hutQuestionnaires}份问卷
               </div>
             </div>
           )}
@@ -643,6 +840,7 @@ function F({ label, children, last }) {
 
 const badgeBlue = { fontSize:9, background:"#e8f0fe", color:"#3a5a9a", borderRadius:3, padding:"1px 5px", fontFamily:"monospace" };
 const badgeAmber = { fontSize:9, background:"#fef3e2", color:"#8a5a0a", borderRadius:3, padding:"1px 5px" };
+const badgeGreen = { fontSize:9, background:"#e8f6ee", color:"#1f7a4d", borderRadius:3, padding:"1px 5px" };
 
 const ST = {
   card:{ background:"#fff", borderRadius:8, padding:"20px 22px", marginBottom:16, boxShadow:"0 1px 4px rgba(0,0,0,0.06)" },
@@ -658,6 +856,7 @@ const ST = {
   addBtn:{ background:"#2c2825", color:"#f5f2ed", border:"none", borderRadius:4, padding:"3px 10px", fontSize:13, cursor:"pointer", fontWeight:700 },
   btnDark:{ background:"#2c2825", color:"#f5f2ed", border:"none", borderRadius:5, padding:"7px 14px", fontFamily:"inherit", fontSize:12, cursor:"pointer", fontWeight:600 },
   btnGhost:{ background:"none", border:"1px solid #c4bfb8", color:"#7a6e5f", borderRadius:5, padding:"7px 14px", fontFamily:"inherit", fontSize:12, cursor:"pointer" },
+  helpBox:{ background:"#faf8f5", border:"1px solid #ece8e2", borderRadius:6, padding:"8px 10px", marginTop:10, color:"#7a6e5f", fontSize:11, lineHeight:1.8 }
 };
 
 const css = `

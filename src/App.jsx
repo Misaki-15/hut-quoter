@@ -92,7 +92,7 @@ function lineFromCatalog(ci, more = {}) {
     priceO: null,
     mulO: ci.isExtraWeek || ci.isExtraQuestionnaire || ci.isExtraProduct ? 1 : null,
     splitEnabled: false,
-    splitOutsideRatio: 50,
+    splitPanelRatio: 50,
     splitOutsideFactor: 1.2,
     ...more
   };
@@ -203,12 +203,12 @@ export default function App() {
       const price = l.priceO ?? ci.unitPrice;
       const mul = l.mulO ?? 1;
       if (l.splitEnabled) {
-        const outsideRatio = Math.min(100, Math.max(0, clampInt(l.splitOutsideRatio, 0)));
-        const outsideQty = Math.round(qty * outsideRatio / 100);
-        const insideQty = qty - outsideQty;
+        const panelRatio = Math.min(100, Math.max(0, clampInt(l.splitPanelRatio, 0)));
+        const panelQty = Math.round(qty * panelRatio / 100);
+        const regularQty = qty - panelQty;
         const outsideFactor = Math.max(0, Number(l.splitOutsideFactor || 1.2));
-        if (insideQty > 0) rows.push({ ...l, ci, qty: insideQty, price, mul, total: insideQty * price * mul, splitTag:"Panel报价", splitNote:`Panel报价 ${insideQty}` });
-        if (outsideQty > 0) rows.push({ ...l, ci, qty: outsideQty, price: +(price * outsideFactor).toFixed(2), mul, total: outsideQty * +(price * outsideFactor).toFixed(2) * mul, splitTag:"常规报价", splitNote:`常规报价 ${outsideQty}（${outsideFactor}倍）` });
+        if (panelQty > 0) rows.push({ ...l, ci, qty: panelQty, price, mul, total: panelQty * price * mul, splitTag:"Panel报价", splitNote:`Panel报价 ${panelQty}` });
+        if (regularQty > 0) rows.push({ ...l, ci, qty: regularQty, price: +(price * outsideFactor).toFixed(2), mul, total: regularQty * +(price * outsideFactor).toFixed(2) * mul, splitTag:"常规报价", splitNote:`常规报价 ${regularQty}（${outsideFactor}倍）` });
       } else {
         rows.push({ ...l, ci, qty, price, mul, total: qty * price * mul, splitTag:"", splitNote:"" });
       }
@@ -253,7 +253,7 @@ export default function App() {
     setLines(ls => ls.map(l => {
       if (l.lid !== id) return l;
       if (k === "splitEnabled") return { ...l, splitEnabled: !!v };
-      if (k === "splitOutsideRatio") return { ...l, splitOutsideRatio: Math.min(100, Math.max(0, clampInt(v, 0))) };
+      if (k === "splitPanelRatio") return { ...l, splitPanelRatio: Math.min(100, Math.max(0, clampInt(v, 0))) };
       if (k === "splitOutsideFactor") return { ...l, splitOutsideFactor: Math.max(0, Number(v) || 0) };
       const val = v === "" ? null : Math.max(0, Number(v));
       if ((ci?.hutWeeks != null) && k === "mulO") return { ...l, [k]: null };
@@ -284,86 +284,150 @@ export default function App() {
     return { s, screenEnd, rEnd, attr, mEnd, lEnd, tEnd, rpEnd };
   }, [p.startDate, screenDays, recruitDays, mainQDays, leaveDays, toplineDays, reportDays]);
 
-
   const ddlAnalysis = useMemo(() => {
     const targetTop = p.targetToplineEnd ? skipWE(new Date(p.targetToplineEnd)) : null;
     const targetRep = p.targetReportEnd ? skipWE(new Date(p.targetReportEnd)) : null;
 
-    const autoTop = autoProjection.tEnd;
-    const autoRep = autoProjection.rpEnd;
-    const autoRecruitStart = autoProjection.screenEnd;
-    const projectConfirm = autoProjection.s;
-
-    const messages = [];
-    const summary = [];
-
-    function buildDDLMessage(label, targetDate, autoEnd, downstreamDays) {
-      if (!targetDate) return null;
-      const diffDays = Math.ceil((autoEnd - targetDate) / 86400000);
-      const requiredReduction = Math.max(0, diffDays);
-      const daysAhead = Math.max(0, -diffDays);
-      const latestRecruitStart = skipWE(backDays(targetDate, downstreamDays));
-      const recruitLeadGap = Math.ceil((projectConfirm - latestRecruitStart) / 86400000);
-      const requiredCompressionByStart = Math.max(0, recruitLeadGap);
-      const requiredCompression = Math.max(requiredReduction, requiredCompressionByStart);
-
-      let text = `按 ${label} DDL 估算：当前参数下，招募最晚需于 ${fmt(latestRecruitStart)} 开始。`;
-      if (requiredCompression > 0) {
-        text += ` 当前正常排期无法满足，仍需从可调整环节合计压缩至少 ${requiredCompression} 天。`;
-      } else if (daysAhead > 0) {
-        text += ` 当前正常排期可提前 ${daysAhead} 天交付。`;
-      } else {
-        text += ` 当前正常排期刚好满足。`;
-      }
-
+    if (!targetTop && !targetRep) {
       return {
-        text,
-        requiredCompression,
-        daysAhead,
-        latestRecruitStart,
-        targetDate,
-        autoEnd
+        active:false,
+        messages:["未启用倒推"],
+        requiredReductionTopline:0,
+        requiredReductionReport:0,
+        daysAheadTopline:0,
+        daysAheadReport:0,
+        targetTop:null,
+        targetRep:null,
+        reverse:null,
+        reverseBasis:""
       };
     }
 
-    const toplineInfo = buildDDLMessage("Topline", targetTop, autoTop, leaveDays + toplineDays);
-    const reportInfo = buildDDLMessage("Report", targetRep, autoRep, leaveDays + toplineDays + reportDays);
+    const autoTop = autoProjection.tEnd;
+    const autoRep = autoProjection.rpEnd;
+    const diffTop = targetTop ? Math.ceil((autoTop - targetTop) / 86400000) : null;
+    const diffRep = targetRep ? Math.ceil((autoRep - targetRep) / 86400000) : null;
 
-    if (toplineInfo) {
-      messages.push(toplineInfo.text);
-      summary.push(toplineInfo);
+    const requiredReductionTopline = targetTop ? Math.max(0, diffTop) : 0;
+    const requiredReductionReport = targetRep ? Math.max(0, diffRep) : 0;
+    const daysAheadTopline = targetTop ? Math.max(0, -diffTop) : 0;
+    const daysAheadReport = targetRep ? Math.max(0, -diffRep) : 0;
+
+    const messages = [];
+    if (targetTop) {
+      if (requiredReductionTopline > 0) {
+        messages.push(`按 Topline 截止时间倒推：当前自动排期还需从可调整环节合计缩减至少 ${requiredReductionTopline} 天。`);
+      } else if (daysAheadTopline > 0) {
+        messages.push(`按 Topline 截止时间倒推：当前排期可提前 ${daysAheadTopline} 天交付。`);
+      } else {
+        messages.push("按 Topline 截止时间倒推：当前排期刚好满足。");
+      }
     }
-    if (reportInfo) {
-      messages.push(reportInfo.text);
-      summary.push(reportInfo);
+    if (targetRep) {
+      if (requiredReductionReport > 0) {
+        messages.push(`按 Report 截止时间倒推：当前自动排期还需从可调整环节合计缩减至少 ${requiredReductionReport} 天。`);
+      } else if (daysAheadReport > 0) {
+        messages.push(`按 Report 截止时间倒推：当前排期可提前 ${daysAheadReport} 天交付。`);
+      } else {
+        messages.push("按 Report 截止时间倒推：当前排期刚好满足。");
+      }
     }
 
-    if (!messages.length) messages.push("未设置 DDL，当前显示为正常计算时间表。");
+    let reverse = null;
+    let reverseBasis = "";
+    if (targetRep) {
+      reverseBasis = "按 Report 截止时间倒推";
+      const reportEnd = targetRep;
+      const reportStart = skipBack(reportEnd, reportDays);
+      const toplineEnd = reportStart;
+      const toplineStart = skipBack(toplineEnd, toplineDays);
+      const leaveEnd = toplineStart;
+      const recruitEnd = skipBack(leaveEnd, leaveDays);
+      const mainQEnd = leaveEnd;
+      const mainQStart = skipBack(mainQEnd, mainQDays);
+      const recruitStart = skipBack(recruitEnd, recruitDays);
+      const screenEnd = recruitStart;
+      const screenStart = skipBack(screenEnd, screenDays);
+      const attr = skipWE(addDays(recruitEnd, -2));
+      reverse = { screenStart, screenEnd, recruitStart, recruitEnd, mainQStart, mainQEnd, leaveEnd, toplineStart, toplineEnd, reportStart, reportEnd, attr };
+    } else if (targetTop) {
+      reverseBasis = "按 Topline 截止时间倒推";
+      const toplineEnd = targetTop;
+      const toplineStart = skipBack(toplineEnd, toplineDays);
+      const leaveEnd = toplineStart;
+      const recruitEnd = skipBack(leaveEnd, leaveDays);
+      const mainQEnd = leaveEnd;
+      const mainQStart = skipBack(mainQEnd, mainQDays);
+      const recruitStart = skipBack(recruitEnd, recruitDays);
+      const screenEnd = recruitStart;
+      const screenStart = skipBack(screenEnd, screenDays);
+      const attr = skipWE(addDays(recruitEnd, -2));
+      const reportStart = toplineEnd;
+      const reportEnd = skipWE(addDays(reportStart, reportDays));
+      reverse = { screenStart, screenEnd, recruitStart, recruitEnd, mainQStart, mainQEnd, leaveEnd, toplineStart, toplineEnd, reportStart, reportEnd, attr };
+    }
 
     return {
-      active: !!(targetTop || targetRep),
+      active:true,
       messages,
-      toplineInfo,
-      reportInfo,
-      autoRecruitStart,
-      projectConfirm
+      requiredReductionTopline,
+      requiredReductionReport,
+      daysAheadTopline,
+      daysAheadReport,
+      targetTop,
+      targetRep,
+      reverse,
+      reverseBasis
     };
-  }, [p.targetToplineEnd, p.targetReportEnd, autoProjection, leaveDays, toplineDays, reportDays]);
+  }, [p.targetToplineEnd, p.targetReportEnd, autoProjection, screenDays, recruitDays, mainQDays, leaveDays, toplineDays, reportDays]);
 
   const timeline = useMemo(() => {
+    const useReverse = !!ddlAnalysis.reverse;
     const a = autoProjection;
+    const r = ddlAnalysis.reverse;
+    const build = useReverse ? {
+      s: r.screenStart,
+      screenEnd: r.screenEnd,
+      rStart: r.recruitStart,
+      rEnd: r.recruitEnd,
+      attr: r.attr,
+      mStart: r.mainQStart,
+      mEnd: r.mainQEnd,
+      lStart: r.recruitEnd,
+      lEnd: r.leaveEnd,
+      tStart: r.toplineStart,
+      tEnd: r.toplineEnd,
+      rpStart: r.reportStart,
+      rpEnd: r.reportEnd
+    } : {
+      s: a.s,
+      screenEnd: a.screenEnd,
+      rStart: a.screenEnd,
+      rEnd: a.rEnd,
+      attr: a.attr,
+      mStart: a.rEnd,
+      mEnd: a.mEnd,
+      lStart: a.rEnd,
+      lEnd: a.lEnd,
+      tStart: a.lEnd,
+      tEnd: a.tEnd,
+      rpStart: a.tEnd,
+      rpEnd: a.rpEnd
+    };
+
     return [
-      { key:"confirm", phase:"项目确认 / PO", days:"/", start:"—", end:fmt(a.s), note:"固定报价日期 / 项目起始节点", editable:false },
-      { key:"screen", phase:"甄别问卷确认", days:screenDays, start:fmt(a.s), end:fmt(a.screenEnd), note:"可手动调整", editable:true, value: p.screenDaysManual, auto:3, min:1, stateKey:"screenDaysManual" },
-      { key:"recruit", phase:`招募（${recruitWeeksStr(totalN, p.difficulty)}）`, days:recruitDays, start:fmt(a.screenEnd), end:fmt(a.rEnd), note:`按总N=${totalN}、${DIFF_OPTS.find(d=>d.value===p.difficulty)?.label}估算；可手动调整`, editable:true, value: p.recruitDaysManual, auto:recruitDaysAuto, min:1, stateKey:"recruitDaysManual" },
-      { key:"attr", phase:"提供 Attributes", days:"/", start:"—", end:fmt(a.attr), note:"建议招募结束前2天", editable:false },
-      { key:"arrival", phase:"产品到达", days:"/", start:"—", end:fmt(a.attr), note:"建议招募结束前2天", editable:false },
-      { key:"mainQ", phase:"主问卷确认", days:mainQDays, start:fmt(a.rEnd), end:fmt(a.mEnd), note:"可手动调整", editable:true, value: p.mainQDaysManual, auto:3, min:1, stateKey:"mainQDaysManual" },
-      { key:"leave", phase:`派发和留置（含快递${clampInt(p.courierDays, 0)}天）`, days:leaveDays, start:fmt(a.rEnd), end:fmt(a.lEnd), note:`固定不可加急：${design.hutWeeks}周 × 7天 + 快递${clampInt(p.courierDays, 0)}天`, editable:false },
-      { key:"topline", phase:`Topline（${design.overallProducts}款）`, days:toplineDays, start:fmt(a.lEnd), end:fmt(a.tEnd), note:`仅受整体产品数影响；可手动调整；当前自动=${toplineDaysAuto}天`, editable:true, value: p.toplineDaysManual, auto:toplineDaysAuto, min:1, stateKey:"toplineDaysManual" },
-      { key:"report", phase:`Report（${design.overallProducts}款）`, days:reportDays, start:fmt(a.tEnd), end:fmt(a.rpEnd), note:`仅受整体产品数影响；可手动调整；当前自动=${reportDaysAuto}天`, editable:true, value: p.reportDaysManual, auto:reportDaysAuto, min:1, stateKey:"reportDaysManual" },
+      { phase:"项目确认 / PO", days:"/", start:"—", end:fmt(build.s), note: useReverse ? `按DDL倒推后建议最晚启动日期` : "项目起始节点" },
+      { phase:"甄别问卷确认", days:screenDays, start:fmt(build.s), end:fmt(build.screenEnd), note:"可手动调整" },
+      { phase:`招募（${recruitWeeksStr(totalN, p.difficulty)}）`, days:recruitDays, start:fmt(build.rStart), end:fmt(build.rEnd), note:`按总N=${totalN}、${DIFF_OPTS.find(d=>d.value===p.difficulty)?.label}估算；支持手动覆盖` },
+      { phase:"提供 Attributes", days:"/", start:"—", end:fmt(build.attr), note:"建议招募结束前2天" },
+      { phase:"产品到达", days:"/", start:"—", end:fmt(build.attr), note:"建议招募结束前2天" },
+      { phase:"主问卷确认", days:mainQDays, start:fmt(build.mStart), end:fmt(build.mEnd), note:"可手动调整" },
+      { phase:`派发和留置（含快递${clampInt(p.courierDays, 0)}天）`, days:leaveDays, start:fmt(build.lStart), end:fmt(build.lEnd), note:`固定不可加急：${design.hutWeeks}周 × 7天 + 快递${clampInt(p.courierDays, 0)}天` },
+      { phase:`Topline（${design.overallProducts}款）`, days:toplineDays, start:fmt(build.tStart), end:fmt(build.tEnd), note:`仅受整体产品数影响；当前自动=${toplineDaysAuto}天` },
+      { phase:`Report（${design.overallProducts}款）`, days:reportDays, start:fmt(build.rpStart), end:fmt(build.rpEnd), note:`仅受整体产品数影响；当前自动=${reportDaysAuto}天` },
     ];
-  }, [autoProjection, screenDays, recruitDays, mainQDays, leaveDays, design, toplineDays, reportDays, totalN, p.courierDays, p.difficulty, toplineDaysAuto, reportDaysAuto, p.screenDaysManual, p.recruitDaysManual, p.mainQDaysManual, p.toplineDaysManual, p.reportDaysManual]);
+  }, [autoProjection, ddlAnalysis, screenDays, recruitDays, mainQDays, leaveDays, design, toplineDays, reportDays, totalN, p.courierDays, p.difficulty, toplineDaysAuto, reportDaysAuto]);
+
   const exportXLSX = () => {
     const wb = XLSX.utils.book_new();
     const ws1 = XLSX.utils.aoa_to_sheet([
@@ -562,21 +626,17 @@ export default function App() {
                                   <input type="checkbox" checked={!!sourceLine?.splitEnabled} onChange={e => updLine(r.lid, "splitEnabled", e.target.checked)} style={{ marginRight:4 }} />
                                   拆分报价
                                 </label>
-                                {sourceLine?.splitEnabled && (() => {
-                                  const panelRatio = 100 - (sourceLine?.splitOutsideRatio ?? 50);
-                                  return (
+                                {sourceLine?.splitEnabled && (
                                   <>
+                                    <input type="number" min={0} max={100} value={sourceLine?.splitPanelRatio ?? 50} onChange={e => updLine(r.lid, "splitPanelRatio", e.target.value)} style={{ ...S.mini, width:52, textAlign:"center" }} title="Panel报价所占比例%" />
                                     <div style={{ fontSize:10, color:"#666" }}>Panel报价所占比例 / 常规报价倍率</div>
                                     <div style={{ display:"flex", gap:4, alignItems:"center" }}>
-                                      <input type="number" min={0} max={100} value={panelRatio} onChange={e => updLine(r.lid, "splitOutsideRatio", 100 - Math.min(100, Math.max(0, Number(e.target.value || 0))))} style={{ ...S.mini, width:56, textAlign:"center" }} title="Panel报价所占比例%" />
-                                      <span style={{ fontSize:10, color:"#666" }}>%</span>
+                                      <span style={{ fontSize:10, color:"#666" }}>Panel {sourceLine?.splitPanelRatio ?? 50}% / 常规 {100 - (sourceLine?.splitPanelRatio ?? 50)}%</span>
+                                      <input type="range" min={0} max={100} value={sourceLine?.splitPanelRatio ?? 50} onChange={e => updLine(r.lid, "splitPanelRatio", e.target.value)} style={{ width:72 }} title="Panel报价所占比例%" />
                                     </div>
-                                    <input type="range" min={0} max={100} value={panelRatio} onChange={e => updLine(r.lid, "splitOutsideRatio", 100 - Number(e.target.value || 0))} style={{ width:90 }} title="Panel报价所占比例%" />
-                                    <div style={{ fontSize:10, color:"#666" }}>常规报价占比 {100 - panelRatio}%</div>
-                                    <input type="number" min={0} step="0.1" value={sourceLine?.splitOutsideFactor ?? 1.2} onChange={e => updLine(r.lid, "splitOutsideFactor", e.target.value)} style={{ ...S.mini, width:56, textAlign:"center" }} title="常规报价倍率" />
+                                    <input type="number" min={0} step="0.1" value={sourceLine?.splitOutsideFactor ?? 1.2} onChange={e => updLine(r.lid, "splitOutsideFactor", e.target.value)} style={{ ...S.mini, width:52, textAlign:"center" }} title="常规报价倍率" />
                                   </>
-                                  );
-                                })()}
+                                )}
                               </div>
                             )}
                           </td>
@@ -622,7 +682,7 @@ export default function App() {
               <div style={{ background:"#fffbf5", border:"1px solid #ece3d0", borderRadius:8, padding:"11px 15px", fontSize:11, color:"#9a8e80", lineHeight:2.1 }}>
                 <strong>整体产品数影响总样本量：</strong>{p.perProductN} × {design.overallProducts} = <strong>{clampInt(p.perProductN, 1) * design.overallProducts}</strong>
                 &emsp;|&emsp;<strong>q8 套装件数计价：</strong>{p.perProductN} × {design.overallProducts} × {Math.max(0, design.setItemsPerProduct - 1)}
-                &emsp;|&emsp;报价明细支持对任意目录项启用拆分：原目录价显示为 Panel报价，拆分后的加价部分显示为常规报价，可直接输入 Panel报价所占比例，并调整常规报价倍率
+                &emsp;|&emsp;报价明细支持对任意目录项启用拆分：原目录价显示为 Panel报价，拆分后的加价部分显示为常规报价，可调整常规报价占比与倍率
                 &emsp;|&emsp;基础项倍数已锁定，避免金额与研究设计脱钩
               </div>
             </div>
@@ -756,10 +816,12 @@ export default function App() {
                   </div>
                 </div>
               </div>
-              <div style={{ background:"#fff7ed", border:"1px solid #f1d4a9", borderRadius:6, padding:"12px 14px", color:"#8a5a0a", fontSize:12, lineHeight:1.9, marginBottom:12 }}>
-                <div style={{ fontWeight:700, marginBottom:6 }}>DDL 结果提示</div>
-                {ddlAnalysis.messages.map((msg, i) => <div key={i}>{msg}</div>)}
-              </div>
+              {ddlAnalysis.active && (
+                <div style={{ background:"#fff7ed", border:"1px solid #f1d4a9", borderRadius:6, padding:"12px 14px", color:"#8a5a0a", fontSize:12, lineHeight:1.9, marginBottom:12 }}>
+                  <div style={{ fontWeight:700, marginBottom:6 }}>DDL 结果提示</div>
+                  {ddlAnalysis.messages.map((msg, i) => <div key={i}>{msg}</div>)}
+                </div>
+              )}
               <table style={S.table}>
                 <thead>
                   <tr>
@@ -774,22 +836,7 @@ export default function App() {
                   {timeline.map((r, i) => (
                     <tr key={i} style={i % 2 === 1 ? { background:"#faf8f5" } : {}}>
                       <td style={{ ...S.td, fontWeight:500 }}>{r.phase}</td>
-                      <td style={{ ...S.td, textAlign:"right", color:"#999", fontFamily:"monospace" }}>
-                        {r.editable ? (
-                          <div style={{ display:"flex", alignItems:"center", justifyContent:"flex-end", gap:6 }}>
-                            <input
-                              type="number"
-                              min={r.min || 1}
-                              className="inp"
-                              value={r.value}
-                              placeholder={`${r.auto}`}
-                              onChange={e => sp(r.stateKey, e.target.value)}
-                              style={{ width:72, textAlign:"right", padding:"6px 8px", fontFamily:"monospace" }}
-                            />
-                            <span style={{ minWidth:26 }}>{r.days}</span>
-                          </div>
-                        ) : r.days}
-                      </td>
+                      <td style={{ ...S.td, textAlign:"right", color:"#999", fontFamily:"monospace" }}>{r.days}</td>
                       <td style={{ ...S.td, textAlign:"center", fontFamily:"monospace", fontSize:12 }}>{r.start}</td>
                       <td style={{ ...S.td, textAlign:"center", fontFamily:"monospace", fontSize:12, fontWeight:700 }}>{r.end}</td>
                       <td style={{ ...S.td, fontSize:11, color:"#aaa" }}>{r.note}</td>
@@ -798,9 +845,9 @@ export default function App() {
                 </tbody>
               </table>
               <div style={{ marginTop:14, padding:"12px 16px", background:"#f7f4ef", borderRadius:6, fontSize:11, color:"#888", lineHeight:2.2 }}>
-                <strong style={{ color:"#7a6e5f" }}>招募周期：</strong>按样本量分段估算，并结合招募难度系数，上限不超过 28 天。当前自动：{recruitDaysAuto} 天；如需加急，请直接在表格中修改“招募”行天数。<br/>
-                <strong style={{ color:"#7a6e5f" }}>Topline：</strong>7天基础；第3/5/7...款各 +3.5 天，不再因额外问卷增加时长。当前自动：{toplineDaysAuto} 天；可在表格中直接修改
-                &emsp;<strong style={{ color:"#7a6e5f" }}>Report：</strong>7天基础；每 +1 款增 3.5 天。当前自动：{reportDaysAuto} 天；可在表格中直接修改<br/>
+                <strong style={{ color:"#7a6e5f" }}>招募周期：</strong>按样本量分段估算，并结合招募难度系数，上限不超过 28 天。当前自动：{recruitDaysAuto} 天<br/>
+                <strong style={{ color:"#7a6e5f" }}>Topline：</strong>7天基础；第3/5/7...款各 +3.5 天，不再因额外问卷增加时长。当前自动：{toplineDaysAuto} 天
+                &emsp;<strong style={{ color:"#7a6e5f" }}>Report：</strong>7天基础；每 +1 款增 3.5 天。当前自动：{reportDaysAuto} 天<br/>
                 <strong style={{ color:"#7a6e5f" }}>留置：</strong>{design.hutWeeks}周 × 7 + 快递 {p.courierDays} 天 = {leaveDays} 天（固定不可压缩）
                 &emsp;<strong style={{ color:"#7a6e5f" }}>当前设计：</strong>{clampInt(p.perProductN, 1)}人/单产品 · {design.overallProducts}款 · 套装{design.setItemsPerProduct}件 · {design.hutWeeks}周 · {design.hutQuestionnaires}份问卷
               </div>
@@ -849,31 +896,4 @@ const css = `
   .inp:disabled{cursor:not-allowed;}
   .export-btn{background:#e8c99a;color:#2c2825;border:none;border-radius:6px;padding:10px 18px;font-family:inherit;font-weight:700;font-size:13px;cursor:pointer;}
   .export-btn:hover{background:#d4b580;}
-`;<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 }}>
-                <div style={{ background:"#f7f4ef", borderRadius:6, padding:"12px" }}>
-                  <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#7a6e5f", marginBottom:10, fontWeight:700 }}>时间参数说明</div>
-                  <div style={{ fontSize:11, color:"#7a6e5f", lineHeight:1.9 }}>
-                    <div><strong>项目确认时间：</strong>{fmt(autoProjection.s)}（固定报价日期，不参与倒推）</div>
-                    <div><strong>可调整环节：</strong>甄别问卷确认、招募、主问卷确认、Topline、Report</div>
-                    <div><strong>固定不可加急：</strong>派发和留置 = {design.hutWeeks}周 × 7 + 快递{p.courierDays}天 = {leaveDays}天</div>
-                    <div><strong>编辑方式：</strong>请直接在下方时间表的“天数”列修改可调整环节，提示会实时更新。</div>
-                  </div>
-                </div>
-                <div style={{ background:"#fff7ed", border:"1px solid #f1d4a9", borderRadius:6, padding:"12px" }}>
-                  <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a5a0a", marginBottom:10, fontWeight:700 }}>DDL 参考（可选）</div>
-                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-                    <F label="Topline 结束日期">
-                      <input className="inp" type="date" value={p.targetToplineEnd} onChange={e => sp("targetToplineEnd", e.target.value)} />
-                    </F>
-                    <F label="Report 结束日期">
-                      <input className="inp" type="date" value={p.targetReportEnd} onChange={e => sp("targetReportEnd", e.target.value)} />
-                    </F>
-                  </div>
-                  <div style={{ marginTop:10, padding:"10px 12px", background:"#fff", borderRadius:6, border:"1px solid #f3e4ca", fontSize:11, lineHeight:1.9, color:"#7a6e5f" }}>
-                    <div><strong>当前正常招募：</strong>{recruitDays} 天 / {recruitWeeksStr(totalN, p.difficulty)}</div>
-                    <div><strong>当前 Topline：</strong>{toplineDays} 天　<strong>当前 Report：</strong>{reportDays} 天</div>
-                    <div><strong>总样本量：</strong>{p.totalNAuto ? `${clampInt(p.perProductN, 1)} × ${design.overallProducts} = ${totalNDisplay}` : `手动输入 ${totalN}`}</div>
-                  </div>
-                </div>
-              </div>
-              
+`;

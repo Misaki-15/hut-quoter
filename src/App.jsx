@@ -236,38 +236,28 @@ export default function App() {
   const gross = +(sub * (1 + clampInt(p.vatRate, 0) / 100)).toFixed(2);
 
   const syncHUTLines = () => {
-    const existingMap = new Map(lines.map(l => [l.lid, l]));
     const next = [];
 
-    const pushUnique = (id, more = {}) => {
+    const pushNew = (id, more = {}) => {
       const ci = getCi(id);
       if (!ci) return;
       if (next.find(x => x.lid === id)) return;
-      const existing = existingMap.get(id);
-      next.push(existing ? { ...existing, ...more } : lineFromCatalog(ci, more));
+      next.push(lineFromCatalog(ci, more));
     };
 
-    pushUnique("d3");
-    pushUnique(design.baseId, { mulO: null });
+    pushNew("d3");
+    pushNew(design.baseId, { mulO: null });
 
     const weekDiff = Math.max(0, design.hutWeeks - design.baseWeeks);
     const questDiff = Math.max(0, design.hutQuestionnaires - design.baseQuestionnaires);
     const setDiff = Math.max(0, design.setItemsPerProduct - 1);
 
-    if (weekDiff > 0) pushUnique("q6", { mulO: weekDiff });
-    if (questDiff > 0) pushUnique("q7", { mulO: questDiff });
-    if (setDiff > 0) pushUnique("q8", { mulO: setDiff });
+    if (weekDiff > 0) pushNew("q6", { mulO: weekDiff });
+    if (questDiff > 0) pushNew("q7", { mulO: questDiff });
+    if (setDiff > 0) pushNew("q8", { mulO: setDiff });
 
-    lines.forEach(l => {
-      const ci = getCi(l.lid);
-      if (!ci) return;
-      if (next.find(x => x.lid === l.lid)) return;
-      if (l.lid === "d1" || l.lid === "d2") return;
-      next.push(l);
-    });
-
-    pushUnique("d1");
-    pushUnique("d2");
+    pushNew("d1");
+    pushNew("d2");
 
     setLines(sortLinesForDisplay(next));
   };

@@ -92,8 +92,8 @@ function lineFromCatalog(ci, more = {}) {
     priceO: null,
     mulO: ci.isExtraWeek || ci.isExtraQuestionnaire || ci.isExtraProduct ? 1 : null,
     splitEnabled: false,
-    splitPanelRatio: 50,
-    splitRegularFactor: 1.2,
+    splitOutsideRatio: 50,
+    splitOutsideFactor: 1.2,
     ...more
   };
 }
@@ -203,12 +203,12 @@ export default function App() {
       const price = l.priceO ?? ci.unitPrice;
       const mul = l.mulO ?? 1;
       if (l.splitEnabled) {
-        const panelRatio = Math.min(100, Math.max(0, cleanNum(l.splitPanelRatio) ?? 50));
-        const panelQty = Math.round(qty * panelRatio / 100);
-        const regularQty = qty - panelQty;
-        const regularFactor = Math.max(0, Number(l.splitRegularFactor || 1.2));
-        if (panelQty > 0) rows.push({ ...l, ci, qty: panelQty, price, mul, total: panelQty * price * mul, splitTag:"Panel报价", splitNote:`Panel报价 ${panelQty}` });
-        if (regularQty > 0) rows.push({ ...l, ci, qty: regularQty, price: +(price * regularFactor).toFixed(2), mul, total: regularQty * +(price * regularFactor).toFixed(2) * mul, splitTag:"常规报价", splitNote:`常规报价 ${regularQty}（${regularFactor}倍）` });
+        const outsideRatio = Math.min(100, Math.max(0, clampInt(l.splitOutsideRatio, 0)));
+        const outsideQty = Math.round(qty * outsideRatio / 100);
+        const insideQty = qty - outsideQty;
+        const outsideFactor = Math.max(0, Number(l.splitOutsideFactor || 1.2));
+        if (insideQty > 0) rows.push({ ...l, ci, qty: insideQty, price, mul, total: insideQty * price * mul, splitTag:"Panel报价", splitNote:`Panel报价 ${insideQty}` });
+        if (outsideQty > 0) rows.push({ ...l, ci, qty: outsideQty, price: +(price * outsideFactor).toFixed(2), mul, total: outsideQty * +(price * outsideFactor).toFixed(2) * mul, splitTag:"常规报价", splitNote:`常规报价 ${outsideQty}（${outsideFactor}倍）` });
       } else {
         rows.push({ ...l, ci, qty, price, mul, total: qty * price * mul, splitTag:"", splitNote:"" });
       }
@@ -253,8 +253,8 @@ export default function App() {
     setLines(ls => ls.map(l => {
       if (l.lid !== id) return l;
       if (k === "splitEnabled") return { ...l, splitEnabled: !!v };
-      if (k === "splitPanelRatio") return { ...l, splitPanelRatio: Math.min(100, Math.max(0, clampInt(v, 0))) };
-      if (k === "splitRegularFactor") return { ...l, splitRegularFactor: Math.max(0, Number(v) || 0) };
+      if (k === "splitOutsideRatio") return { ...l, splitOutsideRatio: Math.min(100, Math.max(0, clampInt(v, 0))) };
+      if (k === "splitOutsideFactor") return { ...l, splitOutsideFactor: Math.max(0, Number(v) || 0) };
       const val = v === "" ? null : Math.max(0, Number(v));
       if ((ci?.hutWeeks != null) && k === "mulO") return { ...l, [k]: null };
       return { ...l, [k]: Number.isFinite(val) ? val : null };
@@ -562,18 +562,21 @@ export default function App() {
                                   <input type="checkbox" checked={!!sourceLine?.splitEnabled} onChange={e => updLine(r.lid, "splitEnabled", e.target.checked)} style={{ marginRight:4 }} />
                                   拆分报价
                                 </label>
-                                {sourceLine?.splitEnabled && (
+                                {sourceLine?.splitEnabled && (() => {
+                                  const panelRatio = 100 - (sourceLine?.splitOutsideRatio ?? 50);
+                                  return (
                                   <>
-                                    <div style={{ fontSize:10, color:"#666" }}>输入 Panel报价所占比例</div>
-                                    <div style={{ display:"flex", gap:6, alignItems:"center", justifyContent:"center", flexWrap:"wrap" }}>
-                                      <input type="number" min={0} max={100} value={sourceLine?.splitPanelRatio ?? 50} onChange={e => updLine(r.lid, "splitPanelRatio", e.target.value)} style={{ ...S.mini, width:58, textAlign:"center" }} title="Panel报价所占比例%" />
+                                    <div style={{ fontSize:10, color:"#666" }}>Panel报价所占比例 / 常规报价倍率</div>
+                                    <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+                                      <input type="number" min={0} max={100} value={panelRatio} onChange={e => updLine(r.lid, "splitOutsideRatio", 100 - Math.min(100, Math.max(0, Number(e.target.value || 0))))} style={{ ...S.mini, width:56, textAlign:"center" }} title="Panel报价所占比例%" />
                                       <span style={{ fontSize:10, color:"#666" }}>%</span>
-                                      <input type="range" min={0} max={100} value={sourceLine?.splitPanelRatio ?? 50} onChange={e => updLine(r.lid, "splitPanelRatio", e.target.value)} style={{ width:76 }} title="Panel报价所占比例%" />
                                     </div>
-                                    <div style={{ fontSize:10, color:"#666" }}>常规报价占比 {Math.max(0, 100 - Number(sourceLine?.splitPanelRatio ?? 50))}%</div>
-                                    <input type="number" min={0} step="0.1" value={sourceLine?.splitRegularFactor ?? 1.2} onChange={e => updLine(r.lid, "splitRegularFactor", e.target.value)} style={{ ...S.mini, width:58, textAlign:"center" }} title="常规报价倍率（相对Panel报价）" />
+                                    <input type="range" min={0} max={100} value={panelRatio} onChange={e => updLine(r.lid, "splitOutsideRatio", 100 - Number(e.target.value || 0))} style={{ width:90 }} title="Panel报价所占比例%" />
+                                    <div style={{ fontSize:10, color:"#666" }}>常规报价占比 {100 - panelRatio}%</div>
+                                    <input type="number" min={0} step="0.1" value={sourceLine?.splitOutsideFactor ?? 1.2} onChange={e => updLine(r.lid, "splitOutsideFactor", e.target.value)} style={{ ...S.mini, width:56, textAlign:"center" }} title="常规报价倍率" />
                                   </>
-                                )}
+                                  );
+                                })()}
                               </div>
                             )}
                           </td>
@@ -619,7 +622,7 @@ export default function App() {
               <div style={{ background:"#fffbf5", border:"1px solid #ece3d0", borderRadius:8, padding:"11px 15px", fontSize:11, color:"#9a8e80", lineHeight:2.1 }}>
                 <strong>整体产品数影响总样本量：</strong>{p.perProductN} × {design.overallProducts} = <strong>{clampInt(p.perProductN, 1) * design.overallProducts}</strong>
                 &emsp;|&emsp;<strong>q8 套装件数计价：</strong>{p.perProductN} × {design.overallProducts} × {Math.max(0, design.setItemsPerProduct - 1)}
-                &emsp;|&emsp;报价明细支持对任意目录项启用拆分：原目录价显示为 Panel报价，拆分后的加价部分显示为常规报价，可调整常规报价占比与倍率
+                &emsp;|&emsp;报价明细支持对任意目录项启用拆分：原目录价显示为 Panel报价，拆分后的加价部分显示为常规报价，可直接输入 Panel报价所占比例，并调整常规报价倍率
                 &emsp;|&emsp;基础项倍数已锁定，避免金额与研究设计脱钩
               </div>
             </div>

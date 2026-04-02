@@ -78,7 +78,7 @@ const INIT_CATALOG = [
   { id:"d2",  cat:"交付与通用",   name:"完整报告",                           unitPrice:4000, calcType:"prod",notes:"", locked:true },
   { id:"d3",  cat:"交付与通用",   name:"项目管理费",                         unitPrice:1000, calcType:"prod",notes:"含样本小组建立/维护", locked:true },
   { id:"d4",  cat:"交付与通用",   name:"盲包",                              unitPrice:20,   calcType:"ppp", notes:"需灏图提供盲包时", locked:true },
-  { id:"d5",  cat:"交付与通用",   name:"消费者招募费",                       unitPrice:80,   calcType:"pp",  notes:"支持库内/库外拆分", panelEligible:true, locked:true },
+  { id:"d5",  cat:"交付与通用",   name:"消费者招募费",                       unitPrice:80,   calcType:"pp",  notes:"可在报价明细中启用拆分", locked:true },
 ];
 
 const CALC_LABELS = { ppp:"单产品N × 整体产品数", pp:"× 总样本量", prod:"× 整体产品数", ses:"× 场次数", fix:"固定金额" };
@@ -92,8 +92,9 @@ function lineFromCatalog(ci, more = {}) {
     qtyO: null,
     priceO: null,
     mulO: ci.isExtraWeek || ci.isExtraQuestionnaire || ci.isExtraProduct ? 1 : null,
-    panelSplit: false,
-    panelOutsideRatio: 50,
+    splitEnabled: false,
+    splitOutsideRatio: 50,
+    splitOutsideFactor: 1.2,
     ...more
   };
 }
@@ -201,12 +202,13 @@ export default function App() {
       const qty = l.qtyO ?? autoQty(ci);
       const price = l.priceO ?? ci.unitPrice;
       const mul = l.mulO ?? 1;
-      if (ci.panelEligible && l.panelSplit) {
-        const outsideRatio = Math.min(100, Math.max(0, clampInt(l.panelOutsideRatio, 0)));
+      if (l.splitEnabled) {
+        const outsideRatio = Math.min(100, Math.max(0, clampInt(l.splitOutsideRatio, 0)));
         const outsideQty = Math.round(qty * outsideRatio / 100);
         const insideQty = qty - outsideQty;
-        if (insideQty > 0) rows.push({ ...l, ci, qty: insideQty, price, mul, total: insideQty * price * mul, splitTag:"库内", splitNote:`库内 ${insideQty} 人` });
-        if (outsideQty > 0) rows.push({ ...l, ci, qty: outsideQty, price: +(price * 1.2).toFixed(2), mul, total: outsideQty * +(price * 1.2).toFixed(2) * mul, splitTag:"库外", splitNote:`库外 ${outsideQty} 人（1.2倍）` });
+        const outsideFactor = Math.max(0, Number(l.splitOutsideFactor || 1.2));
+        if (insideQty > 0) rows.push({ ...l, ci, qty: insideQty, price, mul, total: insideQty * price * mul, splitTag:"常规", splitNote:`常规 ${insideQty}` });
+        if (outsideQty > 0) rows.push({ ...l, ci, qty: outsideQty, price: +(price * outsideFactor).toFixed(2), mul, total: outsideQty * +(price * outsideFactor).toFixed(2) * mul, splitTag:"Panel外", splitNote:`Panel外 ${outsideQty}（${outsideFactor}倍）` });
       } else {
         rows.push({ ...l, ci, qty, price, mul, total: qty * price * mul, splitTag:"", splitNote:"" });
       }
@@ -250,8 +252,9 @@ export default function App() {
     const ci = getCi(id);
     setLines(ls => ls.map(l => {
       if (l.lid !== id) return l;
-      if (k === "panelSplit") return { ...l, panelSplit: !!v };
-      if (k === "panelOutsideRatio") return { ...l, panelOutsideRatio: Math.min(100, Math.max(0, clampInt(v, 0))) };
+      if (k === "splitEnabled") return { ...l, splitEnabled: !!v };
+      if (k === "splitOutsideRatio") return { ...l, splitOutsideRatio: Math.min(100, Math.max(0, clampInt(v, 0))) };
+      if (k === "splitOutsideFactor") return { ...l, splitOutsideFactor: Math.max(0, Number(v) || 0) };
       const val = v === "" ? null : Math.max(0, Number(v));
       if ((ci?.hutWeeks != null) && k === "mulO") return { ...l, [k]: null };
       return { ...l, [k]: Number.isFinite(val) ? val : null };
@@ -266,7 +269,7 @@ export default function App() {
   };
   const addCat = () => {
     _nid += 1;
-    setCatalog(arr => [...arr, { id:`x${_nid}`, cat:"交付与通用", name:"新费用项", unitPrice:0, calcType:"fix", notes:"", locked:false, panelEligible:false }]);
+    setCatalog(arr => [...arr, { id:`x${_nid}`, cat:"交付与通用", name:"新费用项", unitPrice:0, calcType:"fix", notes:"", locked:false,  }]);
   };
 
   const autoProjection = useMemo(() => {
@@ -404,21 +407,6 @@ export default function App() {
   return (
     <div style={{ fontFamily:"Georgia,serif", background:"#f4f1ec", minHeight:"100vh", color:"#1a1a1a" }}>
       <style>{css}</style>
-
-      <div style={{ background:"#2c2825", padding:"18px 28px", display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, flexWrap:"wrap" }}>
-        <div>
-          <div style={{ fontSize:10, letterSpacing:"0.12em", textTransform:"uppercase", color:"#9a8e80", marginBottom:4 }}>HOW-TO 灏图品测 · 智能报价系统</div>
-          <input
-            value={p.title}
-            onChange={e => sp("title", e.target.value)}
-            style={{ background:"transparent", border:"none", borderBottom:"1px solid #5a504a", color:"#f5f2ed", fontSize:20, fontWeight:700, fontFamily:"inherit", outline:"none", width:360, padding:"2px 0" }}
-          />
-        </div>
-        <div style={{ display:"flex", alignItems:"center", gap:14 }}>
-          <div style={{ textAlign:"right" }}>
-            <div style={{ fontSize:10, color:"#9a8e80", letterSpacing:"0.08em", textTransform:"uppercase" }}>含税总额</div>
-            <div style={{ fontSize:26, fontWeight:700, fontFamily:"monospace", color:"#e8c99a" }}>{fmtRMB(gross)}</div>
-          </div>
           <button className="export-btn" onClick={exportXLSX}>⬇ 导出 Excel</button>
         </div>
       </div>
@@ -483,103 +471,8 @@ export default function App() {
 
           <div style={S.card}>
             <div style={S.cardTitle}>手动参数</div>
-            <div style={{ background:"#f7f4ef", borderRadius:6, padding:"12px 12px 8px", marginBottom:14, border:"1px solid #ede9e2" }}>
-              <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#7a6e5f", marginBottom:10, fontWeight:700 }}>样本量设置</div>
-              <F label="单产品样本量 n（per product）">
-                <input className="inp" type="number" min={1} value={p.perProductN} onChange={e => {
-                  const v = clampInt(e.target.value, 1);
-                  sp("perProductN", v);
-                  if (p.totalNAuto) sp("totalNManual", v * design.overallProducts);
-                }} />
-              </F>
-              <label style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, cursor:"pointer", fontSize:12, color:"#888" }}>
-                <input
-                  type="checkbox"
-                  checked={p.totalNAuto}
-                  onChange={e => {
-                    sp("totalNAuto", e.target.checked);
-                    if (e.target.checked) sp("totalNManual", clampInt(p.perProductN, 1) * design.overallProducts);
-                  }}
-                  style={{ width:15, height:15, accentColor:"#7a6e5f" }}
-                />
-                总N 自动 = 单产品N × 整体测试产品数
-              </label>
-              <F label={`总样本量 N${p.totalNAuto ? " (自动)" : ""}`} last>
-                <input
-                  className="inp"
-                  type="number"
-                  min={1}
-                  value={totalN}
-                  disabled={p.totalNAuto}
-                  onChange={e => sp("totalNManual", clampInt(e.target.value, 1))}
-                  style={p.totalNAuto ? { background:"#ede9e2", color:"#aaa" } : {}}
-                />
-              </F>
-            </div>
-
-            <F label="定性场次（组/场）">
-              <input className="inp" type="number" min={0} value={hasQual ? p.sessions : 0} disabled={!hasQual} onChange={e => sp("sessions", clampInt(e.target.value, 0))} style={!hasQual ? { background:"#ede9e2", color:"#aaa" } : {}} />
-            </F>
-            <F label="快递时间（天，默认2天）">
-              <input className="inp" type="number" min={0} max={14} value={p.courierDays} onChange={e => sp("courierDays", clampInt(e.target.value, 0))} />
-            </F>
-            <F label="招募难度">
-              <select className="inp" value={p.difficulty} onChange={e => sp("difficulty", e.target.value)}>
-                {DIFF_OPTS.map(d => <option key={d.value} value={d.value}>{d.label}（系数×{d.factor}）</option>)}
-              </select>
-            </F>
-
-            <div style={{ background:"#f7f4ef", borderRadius:6, padding:"12px", marginTop:10, border:"1px solid #ede9e2" }}>
-              <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#7a6e5f", marginBottom:10, fontWeight:700 }}>可调整环节天数（加急时请人工修改）</div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-                <F label="甄别问卷确认（自动 3）">
-                  <input className="inp" type="number" min={1} placeholder="3" value={p.screenDaysManual} onChange={e => sp("screenDaysManual", e.target.value)} />
-                </F>
-                <F label={`招募天数（自动 ${recruitDaysAuto}）`}>
-                  <input className="inp" type="number" min={1} placeholder={`${recruitDaysAuto}`} value={p.recruitDaysManual} onChange={e => sp("recruitDaysManual", e.target.value)} />
-                </F>
-              </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-                <F label="主问卷确认（自动 3）">
-                  <input className="inp" type="number" min={1} placeholder="3" value={p.mainQDaysManual} onChange={e => sp("mainQDaysManual", e.target.value)} />
-                </F>
-                <F label={`Topline 天数（自动 ${toplineDaysAuto}）`}>
-                  <input className="inp" type="number" min={1} placeholder={`${toplineDaysAuto}`} value={p.toplineDaysManual} onChange={e => sp("toplineDaysManual", e.target.value)} />
-                </F>
-              </div>
-              <F label={`Report 天数（自动 ${reportDaysAuto}）`} last>
-                <input className="inp" type="number" min={1} placeholder={`${reportDaysAuto}`} value={p.reportDaysManual} onChange={e => sp("reportDaysManual", e.target.value)} />
-              </F>
-              <div style={S.helpBox}>“派发和留置”固定不可加急缩短；其余环节可按实际情况手动压缩。</div>
-            </div>
-
-            <div style={{ background:"#fff7ed", border:"1px solid #f1d4a9", borderRadius:6, padding:"12px", marginTop:12 }}>
-              <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a5a0a", marginBottom:10, fontWeight:700 }}>截止时间倒推（可选）</div>
-              <F label="倒推模式">
-                <select className="inp" value={p.ddlMode} onChange={e => sp("ddlMode", e.target.value)}>
-                  <option value="none">不启用倒推</option>
-                  <option value="topline">按 Topline 结束时间倒推</option>
-                  <option value="report">按 Report 结束时间倒推</option>
-                </select>
-              </F>
-              {p.ddlMode === "topline" && (
-                <F label="Topline 结束日期">
-                  <input className="inp" type="date" value={p.targetToplineEnd} onChange={e => sp("targetToplineEnd", e.target.value)} />
-                </F>
-              )}
-              {p.ddlMode === "report" && (
-                <F label="Report 结束日期">
-                  <input className="inp" type="date" value={p.targetReportEnd} onChange={e => sp("targetReportEnd", e.target.value)} />
-                </F>
-              )}
-              <div style={{ fontSize:11, color:"#8a5a0a", lineHeight:1.9 }}>{ddlAnalysis.message}</div>
-            </div>
-
             <F label="VAT 税率 (%)">
               <input className="inp" type="number" min={0} max={20} value={p.vatRate} onChange={e => sp("vatRate", clampInt(e.target.value, 0))} />
-            </F>
-            <F label="项目确认日期" last>
-              <input className="inp" type="date" value={p.startDate} onChange={e => sp("startDate", e.target.value)} />
             </F>
           </div>
 
@@ -589,23 +482,6 @@ export default function App() {
               {validations.map((msg, i) => <div key={i}>• {msg}</div>)}
             </div>
           )}
-
-          <div style={{ background:"#2c2825", borderRadius:8, padding:"16px 18px", marginBottom:12 }}>
-            <div style={{ fontSize:10, fontWeight:700, letterSpacing:"0.08em", textTransform:"uppercase", color:"#9a8e80", marginBottom:10 }}>时间线预览</div>
-            {[
-              ["招募周期", `${recruitDays}天 / ${recruitWeeksStr(totalN, p.difficulty)}`],
-              ["留置总周期", `${leaveDays}天（${design.hutWeeks}周×7+快递${p.courierDays}天）`],
-              ["Topline", `${toplineDays}天（仅按${design.overallProducts}款计算）`],
-              ["Report", `${reportDays}天（仅按${design.overallProducts}款计算）`],
-              ["总样本量", `${p.perProductN}×${design.overallProducts}=${clampInt(p.perProductN, 1) * design.overallProducts}`],
-              ["套装件数计价", `${p.perProductN}×${design.overallProducts}×${design.setItemsPerProduct}`],
-            ].map(([k, v]) => (
-              <div key={k} style={{ display:"flex", justifyContent:"space-between", fontSize:11, padding:"5px 0", borderBottom:"1px solid #3d3530" }}>
-                <span style={{ color:"#9a8e80" }}>{k}</span>
-                <span style={{ fontFamily:"monospace", fontWeight:600, color:"#e8c99a", fontSize:11, marginLeft:12, textAlign:"right" }}>{v}</span>
-              </div>
-            ))}
-          </div>
         </div>
 
         <div>
@@ -651,21 +527,24 @@ export default function App() {
                               {r.ci.isExtraWeek && <span style={badgeAmber}>+{sourceLine?.mulO ?? 1}周</span>}
                               {r.ci.isExtraQuestionnaire && <span style={badgeAmber}>+{sourceLine?.mulO ?? 1}份问卷</span>}
                               {r.ci.isExtraProduct && <span style={badgeAmber}>套装内 +{sourceLine?.mulO ?? 1}件</span>}
-                              {r.ci.panelEligible && sourceLine?.panelSplit && <span style={badgeGreen}>Panel拆分</span>}
+                              {sourceLine?.splitEnabled && <span style={badgeGreen}>已拆分</span>}
                             </div>
                           </td>
                           <td style={{ ...S.td, textAlign:"center", fontSize:11 }}>
-                            {r.splitTag || (r.ci.panelEligible && (
-                              <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                            {r.splitTag || (
+                              <div style={{ display:"flex", flexDirection:"column", gap:4, alignItems:"center" }}>
                                 <label style={{ fontSize:10, color:"#666" }}>
-                                  <input type="checkbox" checked={!!sourceLine?.panelSplit} onChange={e => updLine(r.lid, "panelSplit", e.target.checked)} style={{ marginRight:4 }} />
+                                  <input type="checkbox" checked={!!sourceLine?.splitEnabled} onChange={e => updLine(r.lid, "splitEnabled", e.target.checked)} style={{ marginRight:4 }} />
                                   拆分
                                 </label>
-                                {sourceLine?.panelSplit && (
-                                  <input type="number" min={0} max={100} value={sourceLine?.panelOutsideRatio ?? 50} onChange={e => updLine(r.lid, "panelOutsideRatio", e.target.value)} style={{ ...S.mini, width:52, textAlign:"center" }} title="库外占比%" />
+                                {sourceLine?.splitEnabled && (
+                                  <>
+                                    <input type="number" min={0} max={100} value={sourceLine?.splitOutsideRatio ?? 50} onChange={e => updLine(r.lid, "splitOutsideRatio", e.target.value)} style={{ ...S.mini, width:52, textAlign:"center" }} title="Panel外占比%" />
+                                    <input type="number" min={0} step="0.1" value={sourceLine?.splitOutsideFactor ?? 1.2} onChange={e => updLine(r.lid, "splitOutsideFactor", e.target.value)} style={{ ...S.mini, width:52, textAlign:"center" }} title="Panel外倍率" />
+                                  </>
                                 )}
                               </div>
-                            )) || "—"}
+                            )}
                           </td>
                           <td style={{ ...S.td, fontSize:10, color:"#bbb", lineHeight:1.4 }}>{CALC_LABELS[r.ci.calcType]}{r.ci.isExtraProduct ? "（按套装件数计）" : ""}</td>
                           <td style={{ ...S.td, textAlign:"right" }}>
@@ -709,7 +588,7 @@ export default function App() {
               <div style={{ background:"#fffbf5", border:"1px solid #ece3d0", borderRadius:8, padding:"11px 15px", fontSize:11, color:"#9a8e80", lineHeight:2.1 }}>
                 <strong>整体产品数影响总样本量：</strong>{p.perProductN} × {design.overallProducts} = <strong>{clampInt(p.perProductN, 1) * design.overallProducts}</strong>
                 &emsp;|&emsp;<strong>q8 套装件数计价：</strong>{p.perProductN} × {design.overallProducts} × {Math.max(0, design.setItemsPerProduct - 1)}
-                &emsp;|&emsp;Topline / Report 仅按整体产品数计算，不受额外问卷影响
+                &emsp;|&emsp;报价明细支持对任意目录项启用拆分：可设置 Panel外占比与倍率
                 &emsp;|&emsp;基础项倍数已锁定，避免金额与研究设计脱钩
               </div>
             </div>
@@ -753,8 +632,7 @@ export default function App() {
                                 {ci.isExtraWeek && <div style={{ fontSize:9, color:"#8a5a0a", marginTop:3 }}>⊕ 每倍数 +1周留置</div>}
                                 {ci.isExtraQuestionnaire && <div style={{ fontSize:9, color:"#8a5a0a", marginTop:3 }}>⊕ 每倍数 +1份问卷（仅影响报价，不影响Topline/Report）</div>}
                                 {ci.isExtraProduct && <div style={{ fontSize:9, color:"#8a5a0a", marginTop:3 }}>⊕ 每倍数 +1个留置产品，仅用于套装件数</div>}
-                                {ci.panelEligible && <div style={{ fontSize:9, color:"#1f7a4d", marginTop:3 }}>⊕ 支持 Panel 库内 / 库外 1.2倍拆分</div>}
-                                {ci.locked && <div style={{ fontSize:9, color:"#999", marginTop:3 }}>系统默认目录项，不可删除</div>}
+                                                                {ci.locked && <div style={{ fontSize:9, color:"#999", marginTop:3 }}>系统默认目录项，不可删除</div>}
                               </td>
                               <td style={S.td}>
                                 <select value={ci.cat} onChange={e => updCat(ci.id, "cat", e.target.value)} style={{ ...S.inlineInput, fontSize:10, padding:"3px 4px" }}>
@@ -786,6 +664,71 @@ export default function App() {
           {tab === "timeline" && (
             <div style={S.card}>
               <div style={S.cardTitle}>项目时间表 · 关键节点周末自动顺延至下周一</div>
+              <div style={{ display:"grid", gridTemplateColumns:"1.1fr 1fr", gap:16, marginBottom:14 }}>
+                <div style={{ background:"#f7f4ef", borderRadius:6, padding:"12px", border:"1px solid #ede9e2" }}>
+                  <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#7a6e5f", marginBottom:10, fontWeight:700 }}>时间参数</div>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                    <F label="项目确认日期">
+                      <input className="inp" type="date" value={p.startDate} onChange={e => sp("startDate", e.target.value)} />
+                    </F>
+                    <F label="快递时间（天）">
+                      <input className="inp" type="number" min={0} max={14} value={p.courierDays} onChange={e => sp("courierDays", clampInt(e.target.value, 0))} />
+                    </F>
+                  </div>
+                  <F label="招募难度">
+                    <select className="inp" value={p.difficulty} onChange={e => sp("difficulty", e.target.value)}>
+                      {DIFF_OPTS.map(d => <option key={d.value} value={d.value}>{d.label}（系数×{d.factor}）</option>)}
+                    </select>
+                  </F>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                    <F label="甄别问卷确认（自动 3）">
+                      <input className="inp" type="number" min={1} placeholder="3" value={p.screenDaysManual} onChange={e => sp("screenDaysManual", e.target.value)} />
+                    </F>
+                    <F label={`招募天数（自动 ${recruitDaysAuto}）`}>
+                      <input className="inp" type="number" min={1} placeholder={`${recruitDaysAuto}`} value={p.recruitDaysManual} onChange={e => sp("recruitDaysManual", e.target.value)} />
+                    </F>
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                    <F label="主问卷确认（自动 3）">
+                      <input className="inp" type="number" min={1} placeholder="3" value={p.mainQDaysManual} onChange={e => sp("mainQDaysManual", e.target.value)} />
+                    </F>
+                    <F label={`Topline 天数（自动 ${toplineDaysAuto}）`}>
+                      <input className="inp" type="number" min={1} placeholder={`${toplineDaysAuto}`} value={p.toplineDaysManual} onChange={e => sp("toplineDaysManual", e.target.value)} />
+                    </F>
+                  </div>
+                  <F label={`Report 天数（自动 ${reportDaysAuto}）`} last>
+                    <input className="inp" type="number" min={1} placeholder={`${reportDaysAuto}`} value={p.reportDaysManual} onChange={e => sp("reportDaysManual", e.target.value)} />
+                  </F>
+                  <div style={S.helpBox}>“派发和留置”固定不可加急缩短；其余环节可按实际情况手动压缩。</div>
+                </div>
+                <div style={{ background:"#fff7ed", border:"1px solid #f1d4a9", borderRadius:6, padding:"12px" }}>
+                  <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a5a0a", marginBottom:10, fontWeight:700 }}>截止时间倒推（可选）</div>
+                  <F label="倒推模式">
+                    <select className="inp" value={p.ddlMode} onChange={e => sp("ddlMode", e.target.value)}>
+                      <option value="none">不启用倒推</option>
+                      <option value="topline">按 Topline 结束时间倒推</option>
+                      <option value="report">按 Report 结束时间倒推</option>
+                    </select>
+                  </F>
+                  {p.ddlMode === "topline" && (
+                    <F label="Topline 结束日期">
+                      <input className="inp" type="date" value={p.targetToplineEnd} onChange={e => sp("targetToplineEnd", e.target.value)} />
+                    </F>
+                  )}
+                  {p.ddlMode === "report" && (
+                    <F label="Report 结束日期">
+                      <input className="inp" type="date" value={p.targetReportEnd} onChange={e => sp("targetReportEnd", e.target.value)} />
+                    </F>
+                  )}
+                  <div style={{ marginTop:6, padding:"10px 12px", background:"rgba(255,255,255,0.55)", borderRadius:6, fontSize:11, color:"#8a5a0a", lineHeight:1.9 }}>{ddlAnalysis.message}</div>
+                  <div style={{ marginTop:12, padding:"10px 12px", background:"#fff", borderRadius:6, border:"1px solid #f3e4ca", fontSize:11, lineHeight:1.9, color:"#7a6e5f" }}>
+                    <div><strong>当前自动招募：</strong>{recruitDays} 天 / {recruitWeeksStr(totalN, p.difficulty)}</div>
+                    <div><strong>固定留置：</strong>{leaveDays} 天（{design.hutWeeks}周×7 + 快递{p.courierDays}天）</div>
+                    <div><strong>Topline：</strong>{toplineDays} 天　<strong>Report：</strong>{reportDays} 天</div>
+                    <div><strong>总样本量：</strong>{p.perProductN} × {design.overallProducts} = {clampInt(p.perProductN, 1) * design.overallProducts}</div>
+                  </div>
+                </div>
+              </div>
               {ddlAnalysis.active && (
                 <div style={{ background:"#fff7ed", border:"1px solid #f1d4a9", borderRadius:6, padding:"12px 14px", color:"#8a5a0a", fontSize:12, lineHeight:1.9, marginBottom:12 }}>
                   <div style={{ fontWeight:700, marginBottom:4 }}>{ddlAnalysis.modeLabel}</div>

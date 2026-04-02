@@ -3,10 +3,16 @@ import { useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 
 function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
-function skipWE(d) { const r = new Date(d); while (r.getDay() === 0 || r.getDay() === 6) r.setDate(r.getDate() + 1); return r; }
-function skipAdd(d, n) { return skipWE(addDays(d, n)); }
-function backDays(d, n) { const r = new Date(d); r.setDate(r.getDate() - n); return r; }
-function skipBack(d, n) { return skipWE(backDays(d, n)); }
+function isWeekend(d) { const day = new Date(d).getDay(); return day === 0 || day === 6; }
+function skipWE(d) { const r = new Date(d); while (isWeekend(r)) r.setDate(r.getDate() + 1); return r; }
+function addBusinessDays(start, days) {
+  let d = skipWE(new Date(start));
+  for (let i = 0; i < Math.max(0, Number(days) || 0); i += 1) {
+    d = addDays(d, 1);
+    while (isWeekend(d)) d = addDays(d, 1);
+  }
+  return d;
+}
 function fmt(d) { if (!d || Number.isNaN(new Date(d).getTime())) return "—"; const x = new Date(d); return `${x.getFullYear()}/${String(x.getMonth() + 1).padStart(2, "0")}/${String(x.getDate()).padStart(2, "0")}`; }
 function fmtRMB(n) { return `¥${Number(n || 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
 function clampInt(v, min = 0) { const n = Number(v); if (!Number.isFinite(n)) return min; return Math.max(min, Math.round(n)); }
@@ -124,6 +130,7 @@ export default function App() {
     ddlMode: "none",
     targetToplineEnd: "",
     targetReportEnd: "",
+    manualTimelineEdit: false,
   });
   const sp = (k, v) => setP_(c => ({ ...c, [k]: v }));
   const [lines, setLines] = useState([]);
@@ -278,161 +285,93 @@ export default function App() {
     setCatalog(arr => [...arr, { id:`x${_nid}`, cat:"交付与通用", name:"新费用项", unitPrice:0, calcType:"fix", notes:"", locked:false,  }]);
   };
 
-  const autoProjection = useMemo(() => {
-    const s = skipWE(new Date(p.startDate));
-    const screenEnd = skipAdd(s, screenDays);
-    const rEnd = skipAdd(screenEnd, recruitDays);
-    const attr = skipWE(addDays(rEnd, -2));
-    const mEnd = skipAdd(rEnd, mainQDays);
-    const lEnd = skipAdd(rEnd, leaveDays);
-    const tEnd = skipAdd(lEnd, toplineDays);
-    const rpEnd = skipAdd(tEnd, reportDays);
-    return { s, screenEnd, rEnd, attr, mEnd, lEnd, tEnd, rpEnd };
+    const autoProjection = useMemo(() => {
+    const confirmDate = skipWE(new Date(p.startDate));
+    const screenStart = confirmDate;
+    const screenEnd = addBusinessDays(screenStart, screenDays);
+    const recruitStart = skipWE(addDays(screenEnd, 1));
+    const recruitEnd = addBusinessDays(recruitStart, recruitDays);
+    const mainQStart = skipWE(addDays(recruitEnd, 1));
+    const mainQEnd = addBusinessDays(mainQStart, mainQDays);
+    const leaveStart = skipWE(addDays(mainQEnd, 1));
+    const leaveEnd = addDays(leaveStart, leaveDays);
+    const toplineStart = skipWE(addDays(leaveEnd, 1));
+    const toplineEnd = addBusinessDays(toplineStart, toplineDays);
+    const reportStart = skipWE(addDays(toplineEnd, 1));
+    const reportEnd = addBusinessDays(reportStart, reportDays);
+    const attr = skipWE(addDays(recruitEnd, -2));
+    return {
+      confirmDate, screenStart, screenEnd, recruitStart, recruitEnd,
+      mainQStart, mainQEnd, leaveStart, leaveEnd, toplineStart, toplineEnd,
+      reportStart, reportEnd, attr
+    };
   }, [p.startDate, screenDays, recruitDays, mainQDays, leaveDays, toplineDays, reportDays]);
 
   const ddlAnalysis = useMemo(() => {
     const targetTop = p.targetToplineEnd ? skipWE(new Date(p.targetToplineEnd)) : null;
     const targetRep = p.targetReportEnd ? skipWE(new Date(p.targetReportEnd)) : null;
-
-    if (!targetTop && !targetRep) {
-      return {
-        active:false,
-        messages:["未启用倒推"],
-        requiredReductionTopline:0,
-        requiredReductionReport:0,
-        daysAheadTopline:0,
-        daysAheadReport:0,
-        targetTop:null,
-        targetRep:null,
-        reverse:null,
-        reverseBasis:""
-      };
-    }
-
-    const autoTop = autoProjection.tEnd;
-    const autoRep = autoProjection.rpEnd;
-    const diffTop = targetTop ? Math.ceil((autoTop - targetTop) / 86400000) : null;
-    const diffRep = targetRep ? Math.ceil((autoRep - targetRep) / 86400000) : null;
-
-    const requiredReductionTopline = targetTop ? Math.max(0, diffTop) : 0;
-    const requiredReductionReport = targetRep ? Math.max(0, diffRep) : 0;
-    const daysAheadTopline = targetTop ? Math.max(0, -diffTop) : 0;
-    const daysAheadReport = targetRep ? Math.max(0, -diffRep) : 0;
-
+    const curTop = autoProjection.toplineEnd;
+    const curRep = autoProjection.reportEnd;
     const messages = [];
-    if (targetTop) {
-      if (requiredReductionTopline > 0) {
-        messages.push(`按 Topline 截止时间倒推：当前自动排期还需从可调整环节合计缩减至少 ${requiredReductionTopline} 天。`);
-      } else if (daysAheadTopline > 0) {
-        messages.push(`按 Topline 截止时间倒推：当前排期可提前 ${daysAheadTopline} 天交付。`);
-      } else {
-        messages.push("按 Topline 截止时间倒推：当前排期刚好满足。");
+    const requiredReductionTopline = targetTop ? Math.max(0, Math.ceil((curTop - targetTop) / 86400000)) : 0;
+    const requiredReductionReport = targetRep ? Math.max(0, Math.ceil((curRep - targetRep) / 86400000)) : 0;
+    const daysAheadTopline = targetTop ? Math.max(0, Math.ceil((targetTop - curTop) / 86400000)) : 0;
+    const daysAheadReport = targetRep ? Math.max(0, Math.ceil((targetRep - curRep) / 86400000)) : 0;
+    if (!targetTop && !targetRep) {
+      messages.push("未设置 DDL，当前显示为正常计算时间表。");
+    } else {
+      if (targetTop) {
+        if (requiredReductionTopline > 0) messages.push(`Topline 截止时间：当前仍需加急 ${requiredReductionTopline} 天。`);
+        else if (daysAheadTopline > 0) messages.push(`Topline 截止时间：当前可提前 ${daysAheadTopline} 天完成。`);
+        else messages.push("Topline 截止时间：当前排期刚好满足。");
+      }
+      if (targetRep) {
+        if (requiredReductionReport > 0) messages.push(`Report 截止时间：当前仍需加急 ${requiredReductionReport} 天。`);
+        else if (daysAheadReport > 0) messages.push(`Report 截止时间：当前可提前 ${daysAheadReport} 天完成。`);
+        else messages.push("Report 截止时间：当前排期刚好满足。");
       }
     }
-    if (targetRep) {
-      if (requiredReductionReport > 0) {
-        messages.push(`按 Report 截止时间倒推：当前自动排期还需从可调整环节合计缩减至少 ${requiredReductionReport} 天。`);
-      } else if (daysAheadReport > 0) {
-        messages.push(`按 Report 截止时间倒推：当前排期可提前 ${daysAheadReport} 天交付。`);
-      } else {
-        messages.push("按 Report 截止时间倒推：当前排期刚好满足。");
-      }
-    }
-
-    let reverse = null;
-    let reverseBasis = "";
-    if (targetRep) {
-      reverseBasis = "按 Report 截止时间倒推";
-      const reportEnd = targetRep;
-      const reportStart = skipBack(reportEnd, reportDays);
-      const toplineEnd = reportStart;
-      const toplineStart = skipBack(toplineEnd, toplineDays);
-      const leaveEnd = toplineStart;
-      const recruitEnd = skipBack(leaveEnd, leaveDays);
-      const mainQEnd = leaveEnd;
-      const mainQStart = skipBack(mainQEnd, mainQDays);
-      const recruitStart = skipBack(recruitEnd, recruitDays);
-      const screenEnd = recruitStart;
-      const screenStart = skipBack(screenEnd, screenDays);
-      const attr = skipWE(addDays(recruitEnd, -2));
-      reverse = { screenStart, screenEnd, recruitStart, recruitEnd, mainQStart, mainQEnd, leaveEnd, toplineStart, toplineEnd, reportStart, reportEnd, attr };
-    } else if (targetTop) {
-      reverseBasis = "按 Topline 截止时间倒推";
-      const toplineEnd = targetTop;
-      const toplineStart = skipBack(toplineEnd, toplineDays);
-      const leaveEnd = toplineStart;
-      const recruitEnd = skipBack(leaveEnd, leaveDays);
-      const mainQEnd = leaveEnd;
-      const mainQStart = skipBack(mainQEnd, mainQDays);
-      const recruitStart = skipBack(recruitEnd, recruitDays);
-      const screenEnd = recruitStart;
-      const screenStart = skipBack(screenEnd, screenDays);
-      const attr = skipWE(addDays(recruitEnd, -2));
-      const reportStart = toplineEnd;
-      const reportEnd = skipWE(addDays(reportStart, reportDays));
-      reverse = { screenStart, screenEnd, recruitStart, recruitEnd, mainQStart, mainQEnd, leaveEnd, toplineStart, toplineEnd, reportStart, reportEnd, attr };
-    }
-
+    const needRush = requiredReductionTopline > 0 || requiredReductionReport > 0;
     return {
-      active:true,
-      messages,
-      requiredReductionTopline,
-      requiredReductionReport,
-      daysAheadTopline,
-      daysAheadReport,
-      targetTop,
-      targetRep,
-      reverse,
-      reverseBasis
+      active: !!(targetTop || targetRep),
+      targetTop, targetRep,
+      requiredReductionTopline, requiredReductionReport,
+      daysAheadTopline, daysAheadReport,
+      needRush,
+      messages
     };
-  }, [p.targetToplineEnd, p.targetReportEnd, autoProjection, screenDays, recruitDays, mainQDays, leaveDays, toplineDays, reportDays]);
+  }, [p.targetToplineEnd, p.targetReportEnd, autoProjection]);
+
+  const timelineEditable = p.manualTimelineEdit || ddlAnalysis.needRush;
+
+  const resetTimelineManuals = () => {
+    setP_(c => ({
+      ...c,
+      screenDaysManual: "",
+      recruitDaysManual: "",
+      mainQDaysManual: "",
+      toplineDaysManual: "",
+      reportDaysManual: "",
+    }));
+  };
+
+  const updTimelineDays = (key, value) => {
+    if (!timelineEditable) return;
+    sp(key, value);
+  };
 
   const timeline = useMemo(() => {
-    const useReverse = !!ddlAnalysis.reverse;
     const a = autoProjection;
-    const r = ddlAnalysis.reverse;
-    const build = useReverse ? {
-      s: r.screenStart,
-      screenEnd: r.screenEnd,
-      rStart: r.recruitStart,
-      rEnd: r.recruitEnd,
-      attr: r.attr,
-      mStart: r.mainQStart,
-      mEnd: r.mainQEnd,
-      lStart: r.recruitEnd,
-      lEnd: r.leaveEnd,
-      tStart: r.toplineStart,
-      tEnd: r.toplineEnd,
-      rpStart: r.reportStart,
-      rpEnd: r.reportEnd
-    } : {
-      s: a.s,
-      screenEnd: a.screenEnd,
-      rStart: a.screenEnd,
-      rEnd: a.rEnd,
-      attr: a.attr,
-      mStart: a.rEnd,
-      mEnd: a.mEnd,
-      lStart: a.rEnd,
-      lEnd: a.lEnd,
-      tStart: a.lEnd,
-      tEnd: a.tEnd,
-      rpStart: a.tEnd,
-      rpEnd: a.rpEnd
-    };
-
     return [
-      { phase:"项目确认 / PO", days:"/", start:"—", end:fmt(build.s), note: useReverse ? `按DDL倒推后建议最晚启动日期` : "项目起始节点" },
-      { phase:"甄别问卷确认", days:screenDays, start:fmt(build.s), end:fmt(build.screenEnd), note:"可手动调整" },
-      { phase:`招募（${recruitWeeksStr(totalN, p.difficulty)}）`, days:recruitDays, start:fmt(build.rStart), end:fmt(build.rEnd), note:`按总N=${totalN}、${DIFF_OPTS.find(d=>d.value===p.difficulty)?.label}估算；支持手动覆盖` },
-      { phase:"提供 Attributes", days:"/", start:"—", end:fmt(build.attr), note:"建议招募结束前2天" },
-      { phase:"产品到达", days:"/", start:"—", end:fmt(build.attr), note:"建议招募结束前2天" },
-      { phase:"主问卷确认", days:mainQDays, start:fmt(build.mStart), end:fmt(build.mEnd), note:"可手动调整" },
-      { phase:`派发和留置（含快递${clampInt(p.courierDays, 0)}天）`, days:leaveDays, start:fmt(build.lStart), end:fmt(build.lEnd), note:`固定不可加急：${design.hutWeeks}周 × 7天 + 快递${clampInt(p.courierDays, 0)}天` },
-      { phase:`Topline（${design.overallProducts}款）`, days:toplineDays, start:fmt(build.tStart), end:fmt(build.tEnd), note:`仅受整体产品数影响；当前自动=${toplineDaysAuto}天` },
-      { phase:`Report（${design.overallProducts}款）`, days:reportDays, start:fmt(build.rpStart), end:fmt(build.rpEnd), note:`仅受整体产品数影响；当前自动=${reportDaysAuto}天` },
+      { key:"confirm", phase:"项目确认 / 报价", days:"/", start:"—", end:fmt(a.confirmDate), note:"固定为报价日期", editable:false },
+      { key:"screen", phase:"甄别问卷确认", days:screenDays, start:fmt(a.screenStart), end:fmt(a.screenEnd), note:"按工作日计算；仅在需加急或主动开启手动调整时可修改", editable:timelineEditable, manualKey:"screenDaysManual", autoDays:3 },
+      { key:"recruit", phase:`招募（${recruitWeeksStr(totalN, p.difficulty)}）`, days:recruitDays, start:fmt(a.recruitStart), end:fmt(a.recruitEnd), note:`按工作日计算；自动估算=${recruitDaysAuto}天`, editable:timelineEditable, manualKey:"recruitDaysManual", autoDays:recruitDaysAuto },
+      { key:"mainQ", phase:"主问卷确认", days:mainQDays, start:fmt(a.mainQStart), end:fmt(a.mainQEnd), note:"按工作日计算；仅在需加急或主动开启手动调整时可修改", editable:timelineEditable, manualKey:"mainQDaysManual", autoDays:3 },
+      { key:"leave", phase:`派发和留置（含快递${clampInt(p.courierDays, 0)}天）`, days:leaveDays, start:fmt(a.leaveStart), end:fmt(a.leaveEnd), note:`按自然日计算，固定不可压缩：${design.hutWeeks}周 × 7天 + 快递${clampInt(p.courierDays, 0)}天`, editable:false },
+      { key:"topline", phase:`Topline（${design.overallProducts}款）`, days:toplineDays, start:fmt(a.toplineStart), end:fmt(a.toplineEnd), note:`按工作日计算；自动=${toplineDaysAuto}天`, editable:timelineEditable, manualKey:"toplineDaysManual", autoDays:toplineDaysAuto },
+      { key:"report", phase:`Report（${design.overallProducts}款）`, days:reportDays, start:fmt(a.reportStart), end:fmt(a.reportEnd), note:`按工作日计算；自动=${reportDaysAuto}天`, editable:timelineEditable, manualKey:"reportDaysManual", autoDays:reportDaysAuto },
     ];
-  }, [autoProjection, ddlAnalysis, screenDays, recruitDays, mainQDays, leaveDays, design, toplineDays, reportDays, totalN, p.courierDays, p.difficulty, toplineDaysAuto, reportDaysAuto]);
+  }, [autoProjection, screenDays, recruitDays, mainQDays, leaveDays, toplineDays, reportDays, timelineEditable, totalN, p.difficulty, recruitDaysAuto, design, p.courierDays, toplineDaysAuto, reportDaysAuto]);
 
   const exportXLSX = () => {
     const wb = XLSX.utils.book_new();
@@ -770,10 +709,10 @@ export default function App() {
 
           {tab === "timeline" && (
             <div style={S.card}>
-              <div style={S.cardTitle}>项目时间表 · 关键节点周末自动顺延至下周一</div>
+              <div style={S.cardTitle}>项目时间表 · 工作阶段避开中国周末</div>
               <div style={{ display:"grid", gridTemplateColumns:"1.1fr 1fr", gap:16, marginBottom:14 }}>
                 <div style={{ background:"#f7f4ef", borderRadius:6, padding:"12px", border:"1px solid #ede9e2" }}>
-                  <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#7a6e5f", marginBottom:10, fontWeight:700 }}>时间参数</div>
+                  <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#7a6e5f", marginBottom:10, fontWeight:700 }}>基础参数</div>
                   <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
                     <F label="项目确认日期">
                       <input className="inp" type="date" value={p.startDate} onChange={e => sp("startDate", e.target.value)} />
@@ -782,74 +721,68 @@ export default function App() {
                       <input className="inp" type="number" min={0} max={14} value={p.courierDays} onChange={e => sp("courierDays", clampInt(e.target.value, 0))} />
                     </F>
                   </div>
-                  <F label="招募难度">
+                  <F label="招募难度" last>
                     <select className="inp" value={p.difficulty} onChange={e => sp("difficulty", e.target.value)}>
                       {DIFF_OPTS.map(d => <option key={d.value} value={d.value}>{d.label}（系数×{d.factor}）</option>)}
                     </select>
                   </F>
-                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-                    <F label="甄别问卷确认（自动 3）">
-                      <input className="inp" type="number" min={1} placeholder="3" value={p.screenDaysManual} onChange={e => sp("screenDaysManual", e.target.value)} />
-                    </F>
-                    <F label={`招募天数（自动 ${recruitDaysAuto}）`}>
-                      <input className="inp" type="number" min={1} placeholder={`${recruitDaysAuto}`} value={p.recruitDaysManual} onChange={e => sp("recruitDaysManual", e.target.value)} />
-                    </F>
-                  </div>
-                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-                    <F label="主问卷确认（自动 3）">
-                      <input className="inp" type="number" min={1} placeholder="3" value={p.mainQDaysManual} onChange={e => sp("mainQDaysManual", e.target.value)} />
-                    </F>
-                    <F label={`Topline 天数（自动 ${toplineDaysAuto}）`}>
-                      <input className="inp" type="number" min={1} placeholder={`${toplineDaysAuto}`} value={p.toplineDaysManual} onChange={e => sp("toplineDaysManual", e.target.value)} />
-                    </F>
-                  </div>
-                  <F label={`Report 天数（自动 ${reportDaysAuto}）`} last>
-                    <input className="inp" type="number" min={1} placeholder={`${reportDaysAuto}`} value={p.reportDaysManual} onChange={e => sp("reportDaysManual", e.target.value)} />
-                  </F>
-                  <div style={S.helpBox}>“派发和留置”固定不可加急缩短；其余环节可按实际情况手动压缩。</div>
                 </div>
                 <div style={{ background:"#fff7ed", border:"1px solid #f1d4a9", borderRadius:6, padding:"12px" }}>
-                  <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a5a0a", marginBottom:10, fontWeight:700 }}>截止时间倒推（可选）</div>
+                  <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a5a0a", marginBottom:10, fontWeight:700 }}>DDL 与操作</div>
                   <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-                    <F label="Topline 结束日期">
+                    <F label="Topline 截止时间">
                       <input className="inp" type="date" value={p.targetToplineEnd} onChange={e => sp("targetToplineEnd", e.target.value)} />
                     </F>
-                    <F label="Report 结束日期">
+                    <F label="Report 截止时间">
                       <input className="inp" type="date" value={p.targetReportEnd} onChange={e => sp("targetReportEnd", e.target.value)} />
                     </F>
                   </div>
-                  <div style={{ marginTop:6, padding:"10px 12px", background:"rgba(255,255,255,0.55)", borderRadius:6, fontSize:11, color:"#8a5a0a", lineHeight:1.9 }}>
+                  <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginTop:4 }}>
+                    <button onClick={() => sp("manualTimelineEdit", !p.manualTimelineEdit)} style={S.btnGhost}>
+                      {p.manualTimelineEdit ? "关闭手动调整" : "开启手动调整"}
+                    </button>
+                    <button onClick={resetTimelineManuals} style={S.btnGhost}>恢复自动计算</button>
+                  </div>
+                  <div style={{ marginTop:10, padding:"10px 12px", background:"rgba(255,255,255,0.55)", borderRadius:6, fontSize:11, color:"#8a5a0a", lineHeight:1.9 }}>
                     {ddlAnalysis.messages.map((msg, i) => <div key={i}>{msg}</div>)}
+                    <div>{timelineEditable ? "当前可编辑时间表天数。" : "当前时间表为只读；如需调整，请填写紧急DDL或手动开启调整。"}</div>
                   </div>
                   <div style={{ marginTop:12, padding:"10px 12px", background:"#fff", borderRadius:6, border:"1px solid #f3e4ca", fontSize:11, lineHeight:1.9, color:"#7a6e5f" }}>
-                    <div><strong>当前自动招募：</strong>{recruitDays} 天 / {recruitWeeksStr(totalN, p.difficulty)}</div>
+                    <div><strong>当前自动招募：</strong>{recruitDaysAuto} 天 / {recruitWeeksStr(totalN, p.difficulty)}</div>
                     <div><strong>固定留置：</strong>{leaveDays} 天（{design.hutWeeks}周×7 + 快递{p.courierDays}天）</div>
-                    <div><strong>Topline：</strong>{toplineDays} 天　<strong>Report：</strong>{reportDays} 天</div>
+                    <div><strong>Topline：</strong>{toplineDaysAuto} 天　<strong>Report：</strong>{reportDaysAuto} 天</div>
                     <div><strong>总样本量：</strong>{p.totalNAuto ? `${clampInt(p.perProductN, 1)} × ${design.overallProducts} = ${totalNDisplay}` : `手动输入 ${totalN}`}</div>
                   </div>
                 </div>
               </div>
-              {ddlAnalysis.active && (
-                <div style={{ background:"#fff7ed", border:"1px solid #f1d4a9", borderRadius:6, padding:"12px 14px", color:"#8a5a0a", fontSize:12, lineHeight:1.9, marginBottom:12 }}>
-                  <div style={{ fontWeight:700, marginBottom:6 }}>DDL 结果提示</div>
-                  {ddlAnalysis.messages.map((msg, i) => <div key={i}>{msg}</div>)}
-                </div>
-              )}
               <table style={S.table}>
                 <thead>
                   <tr>
                     <th style={{ ...S.th, width:"30%" }}>阶段</th>
-                    <th style={{ ...S.th, textAlign:"right", width:"8%" }}>天数</th>
-                    <th style={{ ...S.th, textAlign:"center", width:"17%" }}>开始</th>
-                    <th style={{ ...S.th, textAlign:"center", width:"17%" }}>结束</th>
+                    <th style={{ ...S.th, textAlign:"right", width:"10%" }}>天数</th>
+                    <th style={{ ...S.th, textAlign:"center", width:"16%" }}>开始</th>
+                    <th style={{ ...S.th, textAlign:"center", width:"16%" }}>结束</th>
                     <th style={{ ...S.th, width:"28%" }}>计算说明</th>
                   </tr>
                 </thead>
                 <tbody>
                   {timeline.map((r, i) => (
-                    <tr key={i} style={i % 2 === 1 ? { background:"#faf8f5" } : {}}>
+                    <tr key={r.key} style={i % 2 === 1 ? { background:"#faf8f5" } : {}}>
                       <td style={{ ...S.td, fontWeight:500 }}>{r.phase}</td>
-                      <td style={{ ...S.td, textAlign:"right", color:"#999", fontFamily:"monospace" }}>{r.days}</td>
+                      <td style={{ ...S.td, textAlign:"right", color:"#999", fontFamily:"monospace" }}>
+                        {r.editable ? (
+                          <input
+                            type="number"
+                            min={1}
+                            value={p[r.manualKey] === "" ? r.days : p[r.manualKey]}
+                            onChange={e => updTimelineDays(r.manualKey, e.target.value)}
+                            style={{ ...S.mini, width:58, textAlign:"right" }}
+                            title={`自动=${r.autoDays}天`}
+                          />
+                        ) : (
+                          r.days
+                        )}
+                      </td>
                       <td style={{ ...S.td, textAlign:"center", fontFamily:"monospace", fontSize:12 }}>{r.start}</td>
                       <td style={{ ...S.td, textAlign:"center", fontFamily:"monospace", fontSize:12, fontWeight:700 }}>{r.end}</td>
                       <td style={{ ...S.td, fontSize:11, color:"#aaa" }}>{r.note}</td>
@@ -858,11 +791,9 @@ export default function App() {
                 </tbody>
               </table>
               <div style={{ marginTop:14, padding:"12px 16px", background:"#f7f4ef", borderRadius:6, fontSize:11, color:"#888", lineHeight:2.2 }}>
-                <strong style={{ color:"#7a6e5f" }}>招募周期：</strong>按样本量分段估算，并结合招募难度系数，上限不超过 28 天。当前自动：{recruitDaysAuto} 天<br/>
-                <strong style={{ color:"#7a6e5f" }}>Topline：</strong>7天基础；第3/5/7...款各 +3.5 天，不再因额外问卷增加时长。当前自动：{toplineDaysAuto} 天
-                &emsp;<strong style={{ color:"#7a6e5f" }}>Report：</strong>7天基础；每 +1 款增 3.5 天。当前自动：{reportDaysAuto} 天<br/>
-                <strong style={{ color:"#7a6e5f" }}>留置：</strong>{design.hutWeeks}周 × 7 + 快递 {p.courierDays} 天 = {leaveDays} 天（固定不可压缩）
-                &emsp;<strong style={{ color:"#7a6e5f" }}>当前设计：</strong>{clampInt(p.perProductN, 1)}人/单产品 · {design.overallProducts}款 · 套装{design.setItemsPerProduct}件 · {design.hutWeeks}周 · {design.hutQuestionnaires}份问卷
+                <strong style={{ color:"#7a6e5f" }}>周末规则：</strong>甄别问卷确认、招募、主问卷确认、Topline、Report 按工作日计算，自动跳过中国周六、周日。<br/>
+                <strong style={{ color:"#7a6e5f" }}>留置：</strong>{design.hutWeeks}周 × 7 + 快递 {p.courierDays} 天 = {leaveDays} 天，按自然日计算且固定不可压缩。<br/>
+                <strong style={{ color:"#7a6e5f" }}>编辑规则：</strong>仅在“当前需要加急”或“用户主动开启手动调整”时，才允许修改除“派发和留置”外的阶段天数。
               </div>
             </div>
           )}
